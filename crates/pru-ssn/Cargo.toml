@@ -12,3 +12,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "generate-ssn-eval"
+path = "src/bin/generate_ssn_eval.rs"
