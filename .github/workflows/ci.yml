@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          components: clippy,rustfmt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+      - name: Regenerate SSN evaluation
+        run: cargo run -p pru-ssn --bin generate-ssn-eval -- eval/ssn_canaries.json
+      - name: Check SSN evaluation is current
+        run: git diff --exit-code -- eval/ssn_canaries.json
+
+  formal-proofs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install pinned cvc5
+        run: bash scripts/install-cvc5.sh
+      - name: Prove Cedar implication and counterexample
+        run: bash scripts/run-symcc.sh
+      - name: Check compiled OpenShell boundaries
+        run: bash scripts/prove-boundaries.sh
+

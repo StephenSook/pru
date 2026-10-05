@@ -1,0 +1,28 @@
+[package]
+name = "pru-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cedar-policy.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+symcc = []
+
+[dev-dependencies]
+cedar-policy-symcc = "=0.7.0"
+tokio.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "symcc"
+path = "tests/symcc.rs"
+required-features = ["symcc"]

@@ -1,0 +1,7 @@
+{
+  "client_id": "synthetic-client-001",
+  "consent_document_ids": [
+    "synthetic-consent-use-001",
+    "synthetic-consent-disclose-001"
+  ]
+}

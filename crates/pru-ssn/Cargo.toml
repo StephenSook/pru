@@ -1,0 +1,18 @@
+[package]
+name = "pru-ssn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "generate-ssn-eval"
+path = "src/bin/generate_ssn_eval.rs"

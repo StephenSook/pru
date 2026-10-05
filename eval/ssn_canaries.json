@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "positive_canaries": 360,
+    "negative_controls": 120,
+    "generator": "pru-ssn deterministic generator v1",
+    "synthetic_identifier_ranges": [
+      "group 00, which SSA does not issue",
+      "area 9xx, which SSA does not issue"
+    ]
+  },
+  "results": {
+    "true_positives": 360,
+    "misses": 0,
+    "recall": 1.0,
+    "false_positive_spans": 0,
+    "negative_controls_flagged": 0,
+    "false_positive_rate_per_control": 0.0,
+    "miss_rate_upper_bound_95_one_sided": 0.008286950875235621,
+    "confidence_method": "exact Clopper-Pearson binomial bound"
+  },
+  "format_counts": {
+    "dashed": 60,
+    "ocr_noise": 60,
+    "partially_masked": 60,
+    "plain_in_context": 60,
+    "spaced": 60,
+    "split_across_line_break": 60
+  },
+  "notes": [
+    "All full synthetic canaries use group 00 or area 9xx; neither is SSA-issued.",
+    "Masked canaries reveal only a generated four-digit suffix and cannot be tagged test_only from their visible bytes.",
+    "Negative controls include synthetic phone numbers, EINs, ZIP+4 values, dates, unlabeled nine-digit account IDs, and OCR-like prose."
+  ]
+}

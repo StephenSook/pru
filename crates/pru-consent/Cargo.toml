@@ -1,0 +1,22 @@
+[package]
+name = "pru-consent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argon2.workspace = true
+biscuit-auth.workspace = true
+chrono.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mint-synthetic-consent"
+path = "src/bin/mint_synthetic_consent.rs"
