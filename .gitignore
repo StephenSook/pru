@@ -3,6 +3,8 @@ spike/
 .env*
 !.env.example
 *.log
+__pycache__/
+*.py[cod]
 web/node_modules/
 web/.next/
 web/coverage/
