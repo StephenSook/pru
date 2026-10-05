@@ -2,6 +2,7 @@
 members = [
     "crates/pru-boundary",
     "crates/pru-consent",
+    "crates/pru-gateway",
     "crates/pru-policy",
     "crates/pru-ssn",
 ]

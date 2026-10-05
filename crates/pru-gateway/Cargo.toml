@@ -1,0 +1,31 @@
+[package]
+name = "pru-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+hex.workspace = true
+pru-consent = { path = "../pru-consent" }
+pru-policy = { path = "../pru-policy" }
+pru-ssn = { path = "../pru-ssn" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
+
