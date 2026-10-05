@@ -80,8 +80,8 @@ dt { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #
 dd { margin: 3px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .small-note, .empty { color: #626b78; line-height: 1.45; }
 .decision { font-size: 11px; letter-spacing: .08em; }
-.decision-denied { color: var(--wax); }
-.decision-allowed { color: #28624c; }
+.decision-deny { color: var(--wax); }
+.decision-permit { color: #28624c; }
 .hash { font-family: ui-monospace, SFMono-Regular, monospace; word-break: break-all; }
 .proof-card { margin-top: 18px; background: var(--paper-deep); }
 .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; }

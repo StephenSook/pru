@@ -47,6 +47,12 @@ function RouteBadge({ route }: Readonly<{ route: string }>) {
   return <span className={`route-badge ${local ? "route-local" : "route-cloud"}`}>{local ? "● LOCAL" : "↗ TOKEN FACTORY"}</span>;
 }
 
+function decisionLabel(decision: string): string {
+  if (decision === "permit") return "ALLOWED";
+  if (decision === "deny") return "DENIED";
+  return decision.toUpperCase();
+}
+
 export function JudgeDoor() {
   const [clients, setClients] = useState<DemoClient[]>([]);
   const [clientId, setClientId] = useState("");
@@ -220,7 +226,7 @@ export function JudgeDoor() {
               <div className="step-list">
                 {turn.steps.map((step) => (
                   <div className="step" key={step.ledger_entry_id}>
-                    <div><RouteBadge route={step.route} /><strong>{step.decision.toUpperCase()}</strong></div>
+                    <div><RouteBadge route={step.route} /><strong>{decisionLabel(step.decision)}</strong></div>
                     <p>{step.policy_reason}</p>
                     <dl>
                       <div><dt>Model</dt><dd>{step.model_id ?? "none"}</dd></div>
@@ -268,7 +274,7 @@ export function JudgeDoor() {
             {ledger.length === 0 && <p className="empty">Run a prompt to create a decision entry.</p>}
             {ledger.map((entry) => (
               <article className="ledger-row" key={entry.id}>
-                <div><RouteBadge route={entry.route} /><strong className={`decision decision-${entry.decision}`}>{entry.decision.toUpperCase()}</strong></div>
+                <div><RouteBadge route={entry.route} /><strong className={`decision decision-${entry.decision}`}>{decisionLabel(entry.decision)}</strong></div>
                 <p>{entry.policy_reason}</p>
                 <dl>
                   <div><dt>Action</dt><dd>{entry.action}</dd></div>
