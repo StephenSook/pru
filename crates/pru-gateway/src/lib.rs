@@ -449,31 +449,49 @@ async fn call_llm(
 
 fn scan_value(value: &Value) -> Vec<DetectedSpan> {
     let mut detected = Vec::new();
-    scan_value_into(value, &mut detected);
+    scan_value_into(value, None, &mut detected);
     detected
 }
 
-fn scan_value_into(value: &Value, detected: &mut Vec<DetectedSpan>) {
+fn scan_value_into(value: &Value, field_name: Option<&str>, detected: &mut Vec<DetectedSpan>) {
     match value {
         Value::String(text) => {
-            for span in pru_ssn::recognize(text) {
-                detected.push(DetectedSpan {
-                    matched: text[span.start..span.end].to_owned(),
-                    span,
-                });
+            let direct = pru_ssn::recognize(text);
+            if direct.is_empty() {
+                if let Some(field_name) = field_name {
+                    let contextual = format!("{field_name}: {text}");
+                    record_spans(&contextual, pru_ssn::recognize(&contextual), detected);
+                }
+            } else {
+                record_spans(text, direct, detected);
             }
         }
         Value::Array(values) => {
             for value in values {
-                scan_value_into(value, detected);
+                scan_value_into(value, field_name, detected);
             }
         }
         Value::Object(values) => {
-            for value in values.values() {
-                scan_value_into(value, detected);
+            for (name, value) in values {
+                scan_value_into(value, Some(name), detected);
             }
         }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        Value::Number(number) => {
+            if let Some(field_name) = field_name {
+                let contextual = format!("{field_name}: {number}");
+                record_spans(&contextual, pru_ssn::recognize(&contextual), detected);
+            }
+        }
+        Value::Null | Value::Bool(_) => {}
+    }
+}
+
+fn record_spans(text: &str, spans: Vec<SsnSpan>, detected: &mut Vec<DetectedSpan>) {
+    for span in spans {
+        detected.push(DetectedSpan {
+            matched: text[span.start..span.end].to_owned(),
+            span,
+        });
     }
 }
 

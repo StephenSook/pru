@@ -205,6 +205,33 @@ async fn ssn_bearing_prompt_routes_only_to_local_and_ledger_has_only_hash() {
 }
 
 #[tokio::test]
+async fn ssn_field_name_supplies_context_for_plain_string_and_number_arguments() {
+    for ssn_value in [json!("900121001"), json!(900121001)] {
+        let (harness, token) = harness(ConsentKind::Use, None).await;
+        let body = json!({
+            "client_id": CLIENT_ID,
+            "consent_token": token,
+            "purpose": PURPOSE,
+            "arguments": {"ssn": ssn_value, "instruction": "Synthetic routing test"}
+        });
+        let (status, body) = call(&harness.app, "llm_complete", body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let response: ActionResponse = serde_json::from_value(body).expect("action response");
+        assert_eq!(response.route, "local");
+        assert!(response.contains_ssn);
+        assert_eq!(harness.local_calls.lock().expect("local calls").len(), 1);
+        assert!(
+            harness
+                .remote_calls
+                .lock()
+                .expect("remote calls")
+                .is_empty()
+        );
+        assert!(!read_ledger(&harness.ledger_path).contains("900121001"));
+    }
+}
+
+#[tokio::test]
 async fn ssn_free_prompt_with_disclosure_consent_routes_to_token_factory() {
     let (harness, token) = harness(ConsentKind::Disclose, Some(TOKEN_FACTORY_RECIPIENT)).await;
     let (status, body) = call(
