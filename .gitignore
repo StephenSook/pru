@@ -3,7 +3,12 @@ spike/
 .env*
 !.env.example
 *.log
+web/node_modules/
+web/.next/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/*.tsbuildinfo
 .idea/
 .vscode/
 .DS_Store
-
