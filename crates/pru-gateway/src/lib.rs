@@ -26,6 +26,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod api;
+
 pub const TOKEN_FACTORY_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 
@@ -36,7 +38,7 @@ pub struct GatewayState {
 
 struct GatewayInner {
     consent_verifier: ConsentVerifier,
-    revocations: RevocationList,
+    revocations: Mutex<RevocationList>,
     authorizer: EgressAuthorizer,
     client: reqwest::Client,
     config: GatewayConfig,
@@ -52,6 +54,7 @@ pub struct GatewayConfig {
     pub token_factory_base_url: String,
     pub nebius_api_key: String,
     pub ledger_path: PathBuf,
+    pub client_data_root: Option<PathBuf>,
     pub ledger_hash_key: [u8; 32],
 }
 
@@ -157,23 +160,50 @@ struct LedgerEntry<'a> {
 
 struct EgressLedger {
     path: PathBuf,
+    client_data_root: Option<PathBuf>,
     hash_key: [u8; 32],
 }
 
 impl EgressLedger {
-    fn new(path: impl AsRef<Path>, hash_key: [u8; 32]) -> Result<Self, GatewayError> {
+    fn new(
+        path: impl AsRef<Path>,
+        client_data_root: Option<PathBuf>,
+        hash_key: [u8; 32],
+    ) -> Result<Self, GatewayError> {
         let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path.parent() {
+        let directory = client_data_root.as_deref().or_else(|| path.parent());
+        if let Some(parent) = directory {
             std::fs::create_dir_all(parent).map_err(|error| {
                 GatewayError::Ledger(format!("create {}: {error}", parent.display()))
             })?;
         }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|error| GatewayError::Ledger(format!("open {}: {error}", path.display())))?;
-        Ok(Self { path, hash_key })
+        if client_data_root.is_none() {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| {
+                    GatewayError::Ledger(format!("open {}: {error}", path.display()))
+                })?;
+        }
+        Ok(Self {
+            path,
+            client_data_root,
+            hash_key,
+        })
+    }
+
+    fn path_for(&self, client_id: &str) -> Result<PathBuf, GatewayError> {
+        if let Some(root) = &self.client_data_root {
+            validate_client_id(client_id)?;
+            let directory = root.join(client_id);
+            std::fs::create_dir_all(&directory).map_err(|error| {
+                GatewayError::Ledger(format!("create {}: {error}", directory.display()))
+            })?;
+            Ok(directory.join("ledger.jsonl"))
+        } else {
+            Ok(self.path.clone())
+        }
     }
 
     fn append(
@@ -203,10 +233,12 @@ impl EgressLedger {
             contains_ssn: !spans.is_empty(),
             span_hashes,
         };
+        let path = self.path_for(&request.client_id)?;
         let mut file = OpenOptions::new()
+            .create(true)
             .append(true)
-            .open(&self.path)
-            .map_err(|error| GatewayError::Ledger(format!("open ledger: {error}")))?;
+            .open(&path)
+            .map_err(|error| GatewayError::Ledger(format!("open {}: {error}", path.display())))?;
         serde_json::to_writer(&mut file, &entry)
             .map_err(|error| GatewayError::Ledger(format!("serialize entry: {error}")))?;
         file.write_all(b"\n")
@@ -238,13 +270,17 @@ impl GatewayState {
         config: GatewayConfig,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, GatewayError> {
-        let ledger = EgressLedger::new(&config.ledger_path, config.ledger_hash_key)?;
+        let ledger = EgressLedger::new(
+            &config.ledger_path,
+            config.client_data_root.clone(),
+            config.ledger_hash_key,
+        )?;
         let authorizer =
             EgressAuthorizer::new().map_err(|error| GatewayError::Policy(error.to_string()))?;
         Ok(Self {
             inner: Arc::new(GatewayInner {
                 consent_verifier,
-                revocations,
+                revocations: Mutex::new(revocations),
                 authorizer,
                 client: reqwest::Client::new(),
                 config,
@@ -252,6 +288,44 @@ impl GatewayState {
                 clock,
             }),
         })
+    }
+
+    pub fn revoke(&self, revocation_id: impl Into<String>) -> Result<(), GatewayError> {
+        self.inner
+            .revocations
+            .lock()
+            .map_err(|_| GatewayError::Consent("revocation lock poisoned".to_owned()))?
+            .revoke(revocation_id);
+        Ok(())
+    }
+
+    pub fn ledger_entries(&self, client_id: &str) -> Result<Vec<Value>, GatewayError> {
+        validate_client_id(client_id)?;
+        let ledger = self
+            .inner
+            .ledger
+            .lock()
+            .map_err(|_| GatewayError::Ledger("ledger lock poisoned".to_owned()))?;
+        let path = ledger.path_for(client_id)?;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(GatewayError::Ledger(format!(
+                    "read {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let mut entries = contents
+            .lines()
+            .map(|line| {
+                serde_json::from_str(line)
+                    .map_err(|error| GatewayError::Ledger(format!("decode ledger: {error}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.reverse();
+        Ok(entries)
     }
 }
 
@@ -295,11 +369,18 @@ async fn handle_action(
     };
 
     let now = state.inner.clock.now();
-    let verified = match state.inner.consent_verifier.verify(
-        &request.consent_token,
-        now,
-        &state.inner.revocations,
-    ) {
+    let verification = {
+        let revocations = state
+            .inner
+            .revocations
+            .lock()
+            .map_err(|_| GatewayError::Consent("revocation lock poisoned".to_owned()))?;
+        state
+            .inner
+            .consent_verifier
+            .verify(&request.consent_token, now, &revocations)
+    };
+    let verified = match verification {
         Ok(verified) => verified,
         Err(error) => {
             append_ledger(&state, now, &request, action, "deny", route, &spans)?;
@@ -514,4 +595,19 @@ pub fn unique_span_hashes(path: impl AsRef<Path>) -> std::io::Result<BTreeSet<St
 
 pub fn ensure_file_exists(path: impl AsRef<Path>) -> std::io::Result<()> {
     File::create(path).map(drop)
+}
+
+pub(crate) fn validate_client_id(client_id: &str) -> Result<(), GatewayError> {
+    let valid = !client_id.is_empty()
+        && client_id.len() <= 64
+        && client_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if valid {
+        Ok(())
+    } else {
+        Err(GatewayError::Consent(
+            "client id must use 1 to 64 ASCII letters, digits, hyphens, or underscores".to_owned(),
+        ))
+    }
 }

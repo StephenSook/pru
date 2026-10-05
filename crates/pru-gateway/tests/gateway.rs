@@ -102,6 +102,7 @@ async fn harness(kind: ConsentKind, recipient: Option<&str>) -> (Harness, String
         token_factory_base_url: remote_url,
         nebius_api_key: "synthetic-nebius-key".to_owned(),
         ledger_path: ledger_path.clone(),
+        client_data_root: None,
         ledger_hash_key: [7; 32],
     };
     let state = GatewayState::with_clock(
