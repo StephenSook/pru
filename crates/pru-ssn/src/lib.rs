@@ -166,13 +166,39 @@ fn parse_component(digits: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
+/// SSA-invalid range used by deterministic test identifiers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TestSsnRange {
+    /// A conventional area with group `00`, which SSA never issues.
+    Group00,
+    /// An area from `900` through `999`, which SSA never issues.
+    Area9xx,
+}
+
+/// Generate one dashed SSN-shaped identifier that cannot belong to a person.
+#[must_use]
+pub fn synthetic_test_ssn(index: usize, range: TestSsnRange) -> String {
+    let serial = 1000 + (index % 9000);
+    match range {
+        TestSsnRange::Group00 => {
+            let area = 101 + (index % 565);
+            format!("{area:03}-00-{serial:04}")
+        }
+        TestSsnRange::Area9xx => {
+            let area = 900 + (index % 100);
+            let group = 10 + (index % 80);
+            format!("{area:03}-{group:02}-{serial:04}")
+        }
+    }
+}
+
 /// Deterministic synthetic canary generation and measurement.
 pub mod eval {
     use std::collections::BTreeMap;
 
     use serde::Serialize;
 
-    use super::{SsnFormat, recognize};
+    use super::{SsnFormat, TestSsnRange, recognize, synthetic_test_ssn};
 
     const CASES_PER_FORMAT: usize = 60;
     const NEGATIVE_CASES_PER_KIND: usize = 20;
@@ -284,34 +310,35 @@ pub mod eval {
 
         for index in 0..CASES_PER_FORMAT {
             let serial = 1000 + index;
-            let area_group_00 = 101 + index;
-            let area_9xx = 900 + index;
-            let group = 10 + (index % 80);
+            let group_00 = synthetic_test_ssn(index, TestSsnRange::Group00);
+            let area_9xx = synthetic_test_ssn(index, TestSsnRange::Area9xx);
+            let group_00_digits = group_00.replace('-', "");
+            let area_9xx_spaced = area_9xx.replace('-', " ");
 
             canaries.push(Canary {
-                text: format!(
-                    "Synthetic intake record {index}: taxpayer SSN {area_group_00:03}-00-{serial:04}."
-                ),
+                text: format!("Synthetic intake record {index}: taxpayer SSN {group_00}."),
                 format: SsnFormat::Dashed,
                 expected_test_only: true,
             });
             canaries.push(Canary {
                 text: format!(
-                    "Synthetic organizer {index} lists SSN {area_9xx:03} {group:02} {serial:04} for routing tests."
+                    "Synthetic organizer {index} lists SSN {area_9xx_spaced} for routing tests."
                 ),
                 format: SsnFormat::Spaced,
                 expected_test_only: true,
             });
             canaries.push(Canary {
                 text: format!(
-                    "Synthetic taxpayer {index} Social Security number: {area_group_00:03}00{serial:04}."
+                    "Synthetic taxpayer {index} Social Security number: {group_00_digits}."
                 ),
                 format: SsnFormat::Plain,
                 expected_test_only: true,
             });
             canaries.push(Canary {
                 text: format!(
-                    "Synthetic scanned worksheet {index} contains SSN {area_group_00:03}-\n00-\n{serial:04}."
+                    "Synthetic scanned worksheet {index} contains SSN {}-\n00-\n{}.",
+                    &group_00[0..3],
+                    &group_00[7..11]
                 ),
                 format: SsnFormat::LineBreak,
                 expected_test_only: true,
@@ -324,7 +351,7 @@ pub mod eval {
                 expected_test_only: false,
             });
 
-            let ocr_source = format!("{area_9xx:03}{group:02}{serial:04}");
+            let ocr_source = area_9xx.replace('-', "");
             let ocr_rendered: String = ocr_source
                 .chars()
                 .enumerate()
@@ -460,7 +487,7 @@ pub mod eval {
 
 #[cfg(test)]
 mod tests {
-    use super::{SsnFormat, recognize};
+    use super::{SsnFormat, TestSsnRange, recognize, synthetic_test_ssn};
 
     fn single(text: &str) -> super::SsnSpan {
         let spans = recognize(text);
@@ -500,6 +527,15 @@ mod tests {
     #[test]
     fn area_9xx_is_accepted_and_marked_test_only() {
         assert!(single("Synthetic SSN: 999-12-1001.").test_only);
+    }
+
+    #[test]
+    fn generated_demo_identifiers_share_the_canary_path_and_are_test_only() {
+        for range in [TestSsnRange::Group00, TestSsnRange::Area9xx] {
+            let identifier = synthetic_test_ssn(7, range);
+            let text = format!("Synthetic SSN: {identifier}.");
+            assert!(single(&text).test_only);
+        }
     }
 
     #[test]

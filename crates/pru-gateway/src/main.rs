@@ -14,8 +14,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let hash_key = decode_hash_key(&env::var("PRU_LEDGER_HASH_KEY")?)?;
-    let data_root =
-        PathBuf::from(env::var("PRU_DATA_DIR").unwrap_or_else(|_| "data/clients".to_owned()));
+    let temporary_data = if env::var_os("PRU_DATA_DIR").is_none() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let data_root = env::var_os("PRU_DATA_DIR").map_or_else(
+        || {
+            temporary_data
+                .as_ref()
+                .expect("temporary data directory exists")
+                .path()
+                .to_path_buf()
+        },
+        PathBuf::from,
+    );
     let config = GatewayConfig {
         local_base_url: env::var("PRU_LOCAL_LLM_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8081/v1".to_owned()),
@@ -32,8 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let authority = ConsentAuthority::new();
     let gateway = GatewayState::new(authority.verifier(), Default::default(), config)?;
-    let app =
-        api_router(ApiState::new(gateway.clone(), authority, data_root)).merge(router(gateway));
+    let api_state = ApiState::new(gateway.clone(), authority, data_root);
+    api_state.reset_demo()?;
+    let app = api_router(api_state).merge(router(gateway));
     let bind = env::var("PRU_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, app).await?;

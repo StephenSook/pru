@@ -196,11 +196,7 @@ impl EgressLedger {
     fn path_for(&self, client_id: &str) -> Result<PathBuf, GatewayError> {
         if let Some(root) = &self.client_data_root {
             validate_client_id(client_id)?;
-            let directory = root.join(client_id);
-            std::fs::create_dir_all(&directory).map_err(|error| {
-                GatewayError::Ledger(format!("create {}: {error}", directory.display()))
-            })?;
-            Ok(directory.join("ledger.jsonl"))
+            Ok(root.join(client_id).join("ledger.jsonl"))
         } else {
             Ok(self.path.clone())
         }
@@ -234,6 +230,11 @@ impl EgressLedger {
             span_hashes,
         };
         let path = self.path_for(&request.client_id)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                GatewayError::Ledger(format!("create {}: {error}", parent.display()))
+            })?;
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)

@@ -43,11 +43,49 @@ impl ApiState {
     pub fn gateway(&self) -> &GatewayState {
         &self.gateway
     }
+
+    pub fn reset_demo(&self) -> Result<Vec<DemoClientView>, ApiError> {
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| ApiError::Storage("demo storage lock poisoned".to_owned()))?;
+        for client in demo_clients() {
+            for consent in read_consents_unlocked(&self.data_root, &client.id)? {
+                self.gateway.revoke(consent.revocation_id)?;
+            }
+            let directory = client_directory(&self.data_root, &client.id)?;
+            fs::create_dir_all(&directory).map_err(|error| {
+                ApiError::Storage(format!("create {}: {error}", directory.display()))
+            })?;
+            write_json(&directory.join("client.json"), &client)?;
+            write_json(
+                &directory.join("consents.json"),
+                &Vec::<StoredConsent>::new(),
+            )?;
+            fs::write(directory.join("ledger.jsonl"), [])
+                .map_err(|error| ApiError::Storage(format!("clear ledger: {error}")))?;
+        }
+        Ok(demo_clients().iter().map(DemoClientView::from).collect())
+    }
+
+    fn ensure_demo_client(&self, client: &str) -> Result<(), ApiError> {
+        validate_client_id(client)?;
+        if demo_clients()
+            .iter()
+            .any(|candidate| candidate.id == client)
+        {
+            Ok(())
+        } else {
+            Err(ApiError::NotFound)
+        }
+    }
 }
 
 pub fn api_router(state: ApiState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/demo/clients", get(list_demo_clients))
+        .route("/v1/demo/reset", post(reset_demo))
         .route(
             "/v1/clients/{client}/consents",
             post(mint_consent).get(list_consents),
@@ -62,6 +100,67 @@ pub fn api_router(state: ApiState) -> Router {
 
 async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DemoClient {
+    id: String,
+    name: String,
+    filing_status: String,
+    w2_line: String,
+    ssn: String,
+    email: String,
+    test_data: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DemoClientView {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub test_data: bool,
+}
+
+impl From<&DemoClient> for DemoClientView {
+    fn from(client: &DemoClient) -> Self {
+        Self {
+            id: client.id.clone(),
+            name: client.name.clone(),
+            email: client.email.clone(),
+            test_data: client.test_data,
+        }
+    }
+}
+
+fn demo_clients() -> Vec<DemoClient> {
+    vec![
+        DemoClient {
+            id: "demo-avery".to_owned(),
+            name: "Avery Morgan".to_owned(),
+            filing_status: "Single".to_owned(),
+            w2_line: "W-2 box 1 wages: $48,250; box 2 federal tax withheld: $5,410".to_owned(),
+            ssn: pru_ssn::synthetic_test_ssn(1, pru_ssn::TestSsnRange::Group00),
+            email: "avery.morgan@example.com".to_owned(),
+            test_data: true,
+        },
+        DemoClient {
+            id: "demo-riley".to_owned(),
+            name: "Riley Chen".to_owned(),
+            filing_status: "Married filing jointly".to_owned(),
+            w2_line: "W-2 box 1 wages: $73,900; box 2 federal tax withheld: $8,120".to_owned(),
+            ssn: pru_ssn::synthetic_test_ssn(2, pru_ssn::TestSsnRange::Area9xx),
+            email: "riley.chen@example.com".to_owned(),
+            test_data: true,
+        },
+    ]
+}
+
+async fn list_demo_clients() -> Json<Vec<DemoClientView>> {
+    Json(demo_clients().iter().map(DemoClientView::from).collect())
+}
+
+async fn reset_demo(State(state): State<ApiState>) -> Result<Json<Vec<DemoClientView>>, ApiError> {
+    Ok(Json(state.reset_demo()?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +212,7 @@ async fn mint_consent(
     AxumPath(client): AxumPath<String>,
     Json(request): Json<MintConsentRequest>,
 ) -> Result<(StatusCode, Json<ConsentView>), ApiError> {
-    validate_client_id(&client)?;
+    state.ensure_demo_client(&client)?;
     let signed_at = Utc::now();
     let record = ConsentRecord::new(
         &client,
@@ -145,7 +244,7 @@ async fn list_consents(
     State(state): State<ApiState>,
     AxumPath(client): AxumPath<String>,
 ) -> Result<Json<Vec<ConsentView>>, ApiError> {
-    validate_client_id(&client)?;
+    state.ensure_demo_client(&client)?;
     let consents = read_consents(&state, &client)?;
     Ok(Json(consents.iter().map(ConsentView::from).collect()))
 }
@@ -154,7 +253,7 @@ async fn revoke_consent(
     State(state): State<ApiState>,
     AxumPath((client, id)): AxumPath<(String, Uuid)>,
 ) -> Result<Json<ConsentView>, ApiError> {
-    validate_client_id(&client)?;
+    state.ensure_demo_client(&client)?;
     let mut revoked = None;
     with_consents(&state, &client, |consents| {
         if let Some(consent) = consents.iter_mut().find(|consent| consent.id == id) {
@@ -171,6 +270,7 @@ async fn get_ledger(
     State(state): State<ApiState>,
     AxumPath(client): AxumPath<String>,
 ) -> Result<Json<Vec<Value>>, ApiError> {
+    state.ensure_demo_client(&client)?;
     Ok(Json(state.gateway.ledger_entries(&client)?))
 }
 
@@ -202,10 +302,7 @@ fn with_consents(
     fs::create_dir_all(&directory)
         .map_err(|error| ApiError::Storage(format!("create {}: {error}", directory.display())))?;
     let path = directory.join("consents.json");
-    let body = serde_json::to_vec_pretty(&consents)
-        .map_err(|error| ApiError::Storage(format!("encode consents: {error}")))?;
-    fs::write(&path, body)
-        .map_err(|error| ApiError::Storage(format!("write {}: {error}", path.display())))
+    write_json(&path, &consents)
 }
 
 fn read_consents_unlocked(root: &Path, client: &str) -> Result<Vec<StoredConsent>, ApiError> {
@@ -219,6 +316,21 @@ fn read_consents_unlocked(root: &Path, client: &str) -> Result<Vec<StoredConsent
             path.display()
         ))),
     }
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ApiError> {
+    let body = serde_json::to_vec_pretty(value)
+        .map_err(|error| ApiError::Storage(format!("encode {}: {error}", path.display())))?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, body)
+        .map_err(|error| ApiError::Storage(format!("write {}: {error}", temporary.display())))?;
+    fs::rename(&temporary, path).map_err(|error| {
+        ApiError::Storage(format!(
+            "rename {} to {}: {error}",
+            temporary.display(),
+            path.display()
+        ))
+    })
 }
 
 #[derive(Debug, Error)]
