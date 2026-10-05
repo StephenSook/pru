@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/pru-consent",
     "crates/pru-ssn",
 ]
 resolver = "2"
