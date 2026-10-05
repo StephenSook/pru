@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::chat::{ChatRequest, ChatResponse, run_chat};
 use crate::{GatewayError, GatewayState, validate_client_id};
 
 #[derive(Clone)]
@@ -68,7 +69,7 @@ impl ApiState {
         Ok(demo_clients().iter().map(DemoClientView::from).collect())
     }
 
-    fn ensure_demo_client(&self, client: &str) -> Result<(), ApiError> {
+    pub(crate) fn ensure_demo_client(&self, client: &str) -> Result<(), ApiError> {
         validate_client_id(client)?;
         if demo_clients()
             .iter()
@@ -95,6 +96,7 @@ pub fn api_router(state: ApiState) -> Router {
             post(revoke_consent),
         )
         .route("/v1/clients/{client}/ledger", get(get_ledger))
+        .route("/v1/clients/{client}/chat", post(chat))
         .with_state(state)
 }
 
@@ -103,14 +105,14 @@ async fn healthz() -> Json<Value> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct DemoClient {
-    id: String,
-    name: String,
-    filing_status: String,
-    w2_line: String,
-    ssn: String,
-    email: String,
-    test_data: bool,
+pub(crate) struct DemoClient {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) filing_status: String,
+    pub(crate) w2_line: String,
+    pub(crate) ssn: String,
+    pub(crate) email: String,
+    pub(crate) test_data: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +165,14 @@ async fn reset_demo(State(state): State<ApiState>) -> Result<Json<Vec<DemoClient
     Ok(Json(state.reset_demo()?))
 }
 
+async fn chat(
+    State(state): State<ApiState>,
+    AxumPath(client): AxumPath<String>,
+    Json(request): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, ApiError> {
+    Ok(Json(run_chat(&state, &client, request).await?))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MintConsentRequest {
     pub kind: ConsentKind,
@@ -174,12 +184,12 @@ pub struct MintConsentRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct StoredConsent {
-    id: Uuid,
-    token: String,
-    revocation_id: String,
-    revoked: bool,
-    record: ConsentRecord,
+pub(crate) struct StoredConsent {
+    pub(crate) id: Uuid,
+    pub(crate) token: String,
+    pub(crate) revocation_id: String,
+    pub(crate) revoked: bool,
+    pub(crate) record: ConsentRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -279,7 +289,10 @@ fn client_directory(root: &Path, client: &str) -> Result<PathBuf, ApiError> {
     Ok(root.join(client))
 }
 
-fn read_consents(state: &ApiState, client: &str) -> Result<Vec<StoredConsent>, ApiError> {
+pub(crate) fn read_consents(
+    state: &ApiState,
+    client: &str,
+) -> Result<Vec<StoredConsent>, ApiError> {
     let _guard = state
         .storage_lock
         .lock()
@@ -318,6 +331,15 @@ fn read_consents_unlocked(root: &Path, client: &str) -> Result<Vec<StoredConsent
     }
 }
 
+pub(crate) fn read_demo_client(state: &ApiState, client: &str) -> Result<DemoClient, ApiError> {
+    state.ensure_demo_client(client)?;
+    let path = client_directory(&state.data_root, client)?.join("client.json");
+    let body = fs::read(&path)
+        .map_err(|error| ApiError::Storage(format!("read {}: {error}", path.display())))?;
+    serde_json::from_slice(&body)
+        .map_err(|error| ApiError::Storage(format!("decode {}: {error}", path.display())))
+}
+
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ApiError> {
     let body = serde_json::to_vec_pretty(value)
         .map_err(|error| ApiError::Storage(format!("encode {}: {error}", path.display())))?;
@@ -343,15 +365,22 @@ pub enum ApiError {
     NotFound,
     #[error("storage failed: {0}")]
     Storage(String),
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("model response was invalid")]
+    ModelProtocol,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Consent(_) | Self::Gateway(GatewayError::Consent(_)) => StatusCode::BAD_REQUEST,
+            Self::Consent(_)
+            | Self::Gateway(GatewayError::Consent(_))
+            | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::Gateway(error) => return error.into_response(),
             Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ModelProtocol => StatusCode::BAD_GATEWAY,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }

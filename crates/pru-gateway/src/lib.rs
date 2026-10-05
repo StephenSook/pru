@@ -27,6 +27,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod api;
+pub mod chat;
 
 pub const TOKEN_FACTORY_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
@@ -85,9 +86,13 @@ pub struct ActionRequest {
 pub struct ActionResponse {
     pub decision: String,
     pub route: String,
+    pub policy_reason: String,
     pub latency_ms: u128,
     pub dry_run: bool,
     pub contains_ssn: bool,
+    pub ledger_entry_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
 }
@@ -97,6 +102,7 @@ enum GatewayAction {
     SendEmail,
     CreateEvent,
     LlmComplete,
+    ChatComplete,
 }
 
 impl GatewayAction {
@@ -114,6 +120,7 @@ impl GatewayAction {
             Self::SendEmail => "send_email",
             Self::CreateEvent => "create_event",
             Self::LlmComplete => "llm_complete",
+            Self::ChatComplete => "chat_model",
         }
     }
 }
@@ -154,8 +161,20 @@ struct LedgerEntry<'a> {
     action: &'a str,
     decision: &'a str,
     route: &'a str,
+    policy_reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_id: Option<&'a str>,
     contains_ssn: bool,
     span_hashes: Vec<String>,
+}
+
+struct LedgerDecision<'a> {
+    action: GatewayAction,
+    outcome: &'a str,
+    route: &'a str,
+    policy_reason: &'a str,
+    model_id: Option<&'a str>,
+    spans: &'a [DetectedSpan],
 }
 
 struct EgressLedger {
@@ -206,12 +225,10 @@ impl EgressLedger {
         &self,
         at: DateTime<Utc>,
         request: &ActionRequest,
-        action: GatewayAction,
-        decision: &str,
-        route: &str,
-        spans: &[DetectedSpan],
-    ) -> Result<(), GatewayError> {
-        let span_hashes = spans
+        decision: LedgerDecision<'_>,
+    ) -> Result<Uuid, GatewayError> {
+        let span_hashes = decision
+            .spans
             .iter()
             .map(|span| {
                 blake3::keyed_hash(&self.hash_key, span.matched.as_bytes())
@@ -219,14 +236,17 @@ impl EgressLedger {
                     .to_string()
             })
             .collect();
+        let id = Uuid::new_v4();
         let entry = LedgerEntry {
-            id: Uuid::new_v4(),
+            id,
             at,
             client_id: &request.client_id,
-            action: action.name(),
-            decision,
-            route,
-            contains_ssn: !spans.is_empty(),
+            action: decision.action.name(),
+            decision: decision.outcome,
+            route: decision.route,
+            policy_reason: decision.policy_reason,
+            model_id: decision.model_id,
+            contains_ssn: !decision.spans.is_empty(),
             span_hashes,
         };
         let path = self.path_for(&request.client_id)?;
@@ -245,7 +265,8 @@ impl EgressLedger {
         file.write_all(b"\n")
             .map_err(|error| GatewayError::Ledger(format!("append entry: {error}")))?;
         file.flush()
-            .map_err(|error| GatewayError::Ledger(format!("flush entry: {error}")))
+            .map_err(|error| GatewayError::Ledger(format!("flush entry: {error}")))?;
+        Ok(id)
     }
 }
 
@@ -328,6 +349,21 @@ impl GatewayState {
         entries.reverse();
         Ok(entries)
     }
+
+    pub async fn execute_action(
+        &self,
+        action: &str,
+        request: ActionRequest,
+    ) -> Result<ActionResponse, GatewayError> {
+        execute_gateway_action(self, GatewayAction::parse(action)?, request).await
+    }
+
+    pub async fn execute_chat_completion(
+        &self,
+        request: ActionRequest,
+    ) -> Result<ActionResponse, GatewayError> {
+        execute_gateway_action(self, GatewayAction::ChatComplete, request).await
+    }
 }
 
 pub fn router(state: GatewayState) -> Router {
@@ -341,12 +377,19 @@ async fn handle_action(
     AxumPath(action): AxumPath<String>,
     Json(request): Json<ActionRequest>,
 ) -> Result<Json<ActionResponse>, GatewayError> {
+    Ok(Json(state.execute_action(&action, request).await?))
+}
+
+async fn execute_gateway_action(
+    state: &GatewayState,
+    action: GatewayAction,
+    request: ActionRequest,
+) -> Result<ActionResponse, GatewayError> {
     let started = Instant::now();
-    let action = GatewayAction::parse(&action)?;
     let spans = scan_value(&request.arguments);
     let contains_ssn = !spans.is_empty();
     let (policy_action, route, recipient, destination_region) = match action {
-        GatewayAction::LlmComplete if contains_ssn => (
+        GatewayAction::LlmComplete | GatewayAction::ChatComplete if contains_ssn => (
             EgressAction::Use,
             "local",
             "local llama-server".to_owned(),
@@ -354,6 +397,12 @@ async fn handle_action(
         ),
         GatewayAction::LlmComplete => (
             EgressAction::Disclose,
+            "token_factory",
+            TOKEN_FACTORY_RECIPIENT.to_owned(),
+            "dynamic".to_owned(),
+        ),
+        GatewayAction::ChatComplete => (
+            EgressAction::Use,
             "token_factory",
             TOKEN_FACTORY_RECIPIENT.to_owned(),
             "dynamic".to_owned(),
@@ -384,18 +433,54 @@ async fn handle_action(
     let verified = match verification {
         Ok(verified) => verified,
         Err(error) => {
-            append_ledger(&state, now, &request, action, "deny", route, &spans)?;
+            append_ledger(
+                state,
+                now,
+                &request,
+                LedgerDecision {
+                    action,
+                    outcome: "deny",
+                    route,
+                    policy_reason: &error.to_string(),
+                    model_id: model_for(state, action, route),
+                    spans: &spans,
+                },
+            )?;
             return Err(GatewayError::Consent(error.to_string()));
         }
     };
     if verified.client_id != request.client_id {
-        append_ledger(&state, now, &request, action, "deny", route, &spans)?;
+        append_ledger(
+            state,
+            now,
+            &request,
+            LedgerDecision {
+                action,
+                outcome: "deny",
+                route,
+                policy_reason: "token_client_mismatch",
+                model_id: model_for(state, action, route),
+                spans: &spans,
+            },
+        )?;
         return Err(GatewayError::Consent(
             "token client does not match request client".to_owned(),
         ));
     }
     if verified.purpose != request.purpose {
-        append_ledger(&state, now, &request, action, "deny", route, &spans)?;
+        append_ledger(
+            state,
+            now,
+            &request,
+            LedgerDecision {
+                action,
+                outcome: "deny",
+                route,
+                policy_reason: "token_purpose_mismatch",
+                model_id: model_for(state, action, route),
+                spans: &spans,
+            },
+        )?;
         return Err(GatewayError::Consent(
             "token purpose does not match request purpose".to_owned(),
         ));
@@ -433,12 +518,36 @@ async fn handle_action(
         .map_err(|error| GatewayError::PolicyDenied(error.to_string()))?;
     if !policy_decision.allowed {
         let diagnostics = policy_decision.diagnostics.join("; ");
-        append_ledger(&state, now, &request, action, "deny", route, &spans)?;
+        append_ledger(
+            state,
+            now,
+            &request,
+            LedgerDecision {
+                action,
+                outcome: "deny",
+                route,
+                policy_reason: &diagnostics,
+                model_id: model_for(state, action, route),
+                spans: &spans,
+            },
+        )?;
         return Err(GatewayError::PolicyDenied(diagnostics));
     }
 
     // Record the authorization decision before any permitted side effect.
-    append_ledger(&state, now, &request, action, "permit", route, &spans)?;
+    let ledger_entry_id = append_ledger(
+        state,
+        now,
+        &request,
+        LedgerDecision {
+            action,
+            outcome: "permit",
+            route,
+            policy_reason: "cedar_allow",
+            model_id: model_for(state, action, route),
+            spans: &spans,
+        },
+    )?;
 
     let (dry_run, result) = match action {
         GatewayAction::SendEmail | GatewayAction::CreateEvent => (
@@ -450,36 +559,46 @@ async fn handle_action(
                 "sent": false
             })),
         ),
-        GatewayAction::LlmComplete => (
+        GatewayAction::LlmComplete | GatewayAction::ChatComplete => (
             false,
-            Some(call_llm(&state, route, request.arguments).await?),
+            Some(call_llm(state, route, request.arguments).await?),
         ),
     };
-    Ok(Json(ActionResponse {
+    Ok(ActionResponse {
         decision: "permit".to_owned(),
         route: route.to_owned(),
+        policy_reason: "cedar_allow".to_owned(),
         latency_ms: started.elapsed().as_millis(),
         dry_run,
         contains_ssn,
+        ledger_entry_id,
+        model_id: model_for(state, action, route).map(str::to_owned),
         result,
-    }))
+    })
 }
 
 fn append_ledger(
     state: &GatewayState,
     now: DateTime<Utc>,
     request: &ActionRequest,
-    action: GatewayAction,
-    decision: &str,
-    route: &str,
-    spans: &[DetectedSpan],
-) -> Result<(), GatewayError> {
+    decision: LedgerDecision<'_>,
+) -> Result<Uuid, GatewayError> {
     state
         .inner
         .ledger
         .lock()
         .map_err(|_| GatewayError::Ledger("ledger lock poisoned".to_owned()))?
-        .append(now, request, action, decision, route, spans)
+        .append(now, request, decision)
+}
+
+fn model_for<'a>(state: &'a GatewayState, action: GatewayAction, route: &str) -> Option<&'a str> {
+    match action {
+        GatewayAction::LlmComplete | GatewayAction::ChatComplete if route == "local" => {
+            Some(&state.inner.config.local_model)
+        }
+        GatewayAction::LlmComplete | GatewayAction::ChatComplete => Some(TOKEN_FACTORY_MODEL),
+        GatewayAction::SendEmail | GatewayAction::CreateEvent => None,
+    }
 }
 
 async fn call_llm(
@@ -517,15 +636,15 @@ async fn call_llm(
         .await
         .map_err(|error| GatewayError::Upstream(error.to_string()))?;
     let status = response.status();
+    if !status.is_success() {
+        return Err(GatewayError::Upstream(format!(
+            "upstream returned {status}"
+        )));
+    }
     let value = response
         .json::<Value>()
         .await
         .map_err(|error| GatewayError::Upstream(format!("decode {status}: {error}")))?;
-    if !status.is_success() {
-        return Err(GatewayError::Upstream(format!(
-            "upstream returned {status}: {value}"
-        )));
-    }
     Ok(value)
 }
 
