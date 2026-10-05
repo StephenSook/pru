@@ -299,7 +299,8 @@ async fn execute_tool(
         }
         _ => return Err(ApiError::ModelProtocol),
     };
-    let consent = select_consent(consents, ConsentKind::Disclose, Some(&recipient));
+    let consent = select_consent(consents, ConsentKind::Disclose, Some(&recipient))
+        .or_else(|| select_consent(consents, ConsentKind::Use, None));
     let purpose = consent
         .map(|consent| consent.record.purpose.clone())
         .unwrap_or_else(|| DEFAULT_PURPOSE.to_owned());

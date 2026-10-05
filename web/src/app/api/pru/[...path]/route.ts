@@ -35,7 +35,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       method: request.method,
       body,
       headers: body ? { "content-type": "application/json" } : undefined,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(300_000),
       cache: "no-store",
     });
     const responseBody = await response.text();

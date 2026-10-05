@@ -74,6 +74,9 @@ async fn request(
     let bytes = to_bytes(response.into_body(), 1_000_000)
         .await
         .expect("response body");
+    let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 response");
+    assert!(!text.contains("102-00-1001"));
+    assert!(!text.contains("902-12-1002"));
     let value = serde_json::from_slice(&bytes).expect("JSON response");
     (status, value)
 }

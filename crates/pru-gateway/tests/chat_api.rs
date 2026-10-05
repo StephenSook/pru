@@ -156,6 +156,8 @@ async fn request(
         .await
         .expect("response body");
     let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 response");
+    assert!(!text.contains("102-00-1001"));
+    assert!(!text.contains("902-12-1002"));
     let value = serde_json::from_str(&text).expect("JSON response");
     (status, value, text)
 }
@@ -261,6 +263,10 @@ async fn wrong_recipient_tool_is_denied_and_never_becomes_a_dry_run_success() {
     assert_eq!(body["steps"][1]["decision"], "deny");
     assert_eq!(body["steps"][1]["tool_name"], "draft_email");
     assert!(!body["steps"][1]["dry_run"].as_bool().unwrap());
+    assert_ne!(
+        body["steps"][1]["policy_reason"],
+        "error deserializing or verifying the token"
+    );
     assert!(!text.contains("102-00-1001"));
 }
 

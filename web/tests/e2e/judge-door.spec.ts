@@ -13,6 +13,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("runs the three preset routes and the consent lifecycle", async ({ page }) => {
+  await page.getByLabel("Consent kind").selectOption("use");
+  await page.getByRole("button", { name: "Mint test consent" }).click();
+  await expect(page.getByText("Test consent active")).toBeVisible();
+
   await page.getByRole("button", { name: localPrompt }).click();
   await expect(page.getByText("● LOCAL").first()).toBeVisible();
   await expect(page.getByLabel("Assistant result")).not.toContainText(/\b\d{3}-\d{2}-\d{4}\b/);
@@ -24,9 +28,6 @@ test("runs the three preset routes and the consent lifecycle", async ({ page }) 
   await page.getByRole("button", { name: emailPrompt }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
 
-  await page.getByLabel("Consent kind").selectOption("use");
-  await page.getByRole("button", { name: "Mint test consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
   await page.getByLabel("Consent kind").selectOption("disclose");
   await page.getByRole("button", { name: "Mint test consent" }).click();
   await expect(page.getByText("Test consent active")).toBeVisible();
