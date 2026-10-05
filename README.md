@@ -21,6 +21,52 @@ The formal proof covers the Cedar decision logic. It does not prove that the gat
 
 This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R. 301.7216-3, Rev. Proc. 2013-14, or any specific disclosure.
 
+## Phase B part 1
+
+Phase B part 1 adds one judge-facing URL at `http://127.0.0.1:3000`. The browser talks only to a fixed Next.js server route. The server route talks to the Rust gateway on the container loopback interface. The browser never receives `NEBIUS_API_KEY`.
+
+The image starts three processes. Next.js serves the page. The Axum gateway owns consent checks, Cedar decisions, model routing, and the per-client JSONL ledger. A CPU-only llama-server runs NVIDIA Nemotron 3 Nano 4B for SSN-bearing context. SSN-free context with active use consent may go to `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Email and calendar tools remain dry runs.
+
+The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears every consent and ledger and recreates the clients in the ephemeral `/tmp/pru-data` directory. Real taxpayer data is barred by 26 U.S.C. 7216.
+
+Build and run the image from PowerShell. The key comes from the environment and is not copied into an image layer.
+
+```powershell
+docker build -t pru:phase-b1 .
+$env:NEBIUS_API_KEY = [Environment]::GetEnvironmentVariable('NEBIUS_API_KEY', 'User')
+docker run --rm --name pru-phase-b1 -p 3000:3000 -e NEBIUS_API_KEY pru:phase-b1
+```
+
+Open `http://127.0.0.1:3000`. Stop the container with `docker stop pru-phase-b1`.
+
+The local model layer is pinned and checked during the build:
+
+| Field | Value |
+|---|---|
+| Hugging Face repository | [`nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF`](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF) |
+| Repository revision | `ba223d14e45525f7fae81db77ea8cabeb2fc6c25` |
+| File | `NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf` |
+| File size | 2,837,072,864 bytes |
+| SHA-256 | `be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2` |
+| License | [NVIDIA Nemotron Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-nemotron-open-model-license/) |
+
+llama.cpp is pinned to commit `a7fb71fab83b474a0892b9a05aaa3a8ddca2729b`, release `b11401`. The benchmark ran inside the Docker Desktop container on an Intel i7-9700K with eight CPU threads, a 300-token prompt, a forced 150-token answer, temperature 0, and three runs. Each run reported `stop_type: limit` and exactly 300 input plus 150 output tokens.
+
+| Run | First token | Output speed |
+|---:|---:|---:|
+| 1 | 19.1551 s | 2.9792 tokens/s |
+| 2 | 11.7070 s | 0.9256 tokens/s |
+| 3 | 8.3718 s | 3.4185 tokens/s |
+| Median | 11.7070 s | 2.9792 tokens/s |
+
+Re-run the measurement inside a running container:
+
+```powershell
+docker exec pru-phase-b1 node /app/benchmark-local-model.mjs
+```
+
+This part does not wire Hermes inside OpenShell on the hosted box, IRS ATS test taxpayers, Gmail or Calendar sending, a Windows Hello signer, or per-client SQLCipher memory. It does not prove that the gateway's context labels are truthful.
+
 ## Measured SSN canary result
 
 The committed report is [`eval/ssn_canaries.json`](eval/ssn_canaries.json).
@@ -112,4 +158,3 @@ The script sends only this synthetic prompt: `This is a synthetic test. Reply wi
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
-
