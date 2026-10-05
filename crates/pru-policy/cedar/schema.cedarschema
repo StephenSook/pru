@@ -1,0 +1,36 @@
+entity PruAgent;
+
+entity DataItem {
+    client_id: String,
+    contains_ssn: Bool,
+    destination_region: String,
+    recipient: String
+};
+
+action "use" appliesTo {
+    principal: [PruAgent],
+    resource: [DataItem],
+    context: {
+        consent_client_id: String,
+        consent_kind: String,
+        consent_recipient: String,
+        consent_purpose: String,
+        consent_expires_at: Long,
+        requested_purpose: String,
+        now: Long
+    }
+};
+
+action "disclose" appliesTo {
+    principal: [PruAgent],
+    resource: [DataItem],
+    context: {
+        consent_client_id: String,
+        consent_kind: String,
+        consent_recipient: String,
+        consent_purpose: String,
+        consent_expires_at: Long,
+        requested_purpose: String,
+        now: Long
+    }
+};
