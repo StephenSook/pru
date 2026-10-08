@@ -1,6 +1,6 @@
 # Pru
 
-Pru is a tax-practice assistant for a solo preparer or small practice. Hermes Agent runs inside NVIDIA OpenShell through NemoClaw. A Rust gateway is the only permitted egress path. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment.
+Pru is a tax-practice assistant for a solo preparer or small practice. The plan runs Hermes Agent inside NVIDIA OpenShell through NemoClaw; that runtime is proven in a separate spike and is not wired into the product code yet (Phase A and Phase B below say what is). A Rust gateway is the only permitted egress path. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment.
 
 Pru keeps SSN-bearing prompts on the PC and routes them to a local OpenAI-compatible llama-server running NVIDIA Nemotron 3 Nano 4B. It may send consented, SSN-free prompts to NVIDIA Nemotron on Nebius Token Factory. Phase A uses only code-generated synthetic canaries. The product plan permits the IRS's public test taxpayers, labelled as test data, but this repository contains no real taxpayer data.
 
