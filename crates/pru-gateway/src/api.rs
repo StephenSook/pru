@@ -21,6 +21,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::chat::{ChatRequest, ChatResponse, run_chat};
+use crate::limits::{CLIENT_IP_HEADER, LimitError, RequestRateLimiter};
 use crate::workspace::{WORKSPACE_HEADER, WorkspaceContext, WorkspaceError, WorkspaceManager};
 use crate::{GatewayError, GatewayState, validate_client_id};
 
@@ -33,6 +34,7 @@ pub struct ApiState {
     gateway: GatewayState,
     authority: Arc<ConsentAuthority>,
     workspaces: WorkspaceManager,
+    request_rates: RequestRateLimiter,
     storage_lock: Arc<Mutex<()>>,
 }
 
@@ -43,6 +45,7 @@ impl ApiState {
             gateway,
             authority: Arc::new(authority),
             workspaces: WorkspaceManager::new(data_root),
+            request_rates: RequestRateLimiter::new(),
             storage_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -99,6 +102,7 @@ impl ApiState {
 
 pub fn api_router(state: ApiState) -> Router {
     let workspace_state = state.clone();
+    let rate_state = state.clone();
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/demo/clients", get(list_demo_clients))
@@ -118,7 +122,30 @@ pub fn api_router(state: ApiState) -> Router {
             workspace_guard,
         ))
         .layer(middleware::from_fn(visitor_input_guard))
+        .layer(middleware::from_fn_with_state(
+            rate_state,
+            request_rate_guard,
+        ))
         .with_state(state)
+}
+
+async fn request_rate_guard(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() == "/healthz" {
+        return next.run(request).await;
+    }
+    let workspace_id = match workspace_header(request.headers()) {
+        Ok(workspace_id) => workspace_id,
+        Err(error) => return error.into_response(),
+    };
+    let client_ip = client_ip(request.headers());
+    if let Err(error) = state.request_rates.check(&client_ip, workspace_id) {
+        return ApiError::Limit(error).into_response();
+    }
+    next.run(request).await
 }
 
 async fn workspace_guard(
@@ -144,6 +171,14 @@ async fn workspace_guard(
     }
     request.extensions_mut().insert(workspace);
     next.run(request).await
+}
+
+fn client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get(CLIENT_IP_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
 }
 
 fn workspace_header(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -487,6 +522,8 @@ pub enum ApiError {
     Consent(#[from] pru_consent::ConsentError),
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+    #[error(transparent)]
+    Limit(#[from] LimitError),
     #[error("consent not found")]
     NotFound,
     #[error("storage failed: {0}")]
@@ -508,6 +545,9 @@ impl IntoResponse for ApiError {
             Self::Workspace(WorkspaceError::Capacity | WorkspaceError::Deleting) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            Self::Limit(LimitError::IpRate | LimitError::WorkspaceRate) => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             Self::Consent(_)
             | Self::Gateway(GatewayError::Consent(_))
             | Self::InvalidRequest(_)
@@ -515,7 +555,9 @@ impl IntoResponse for ApiError {
             | Self::Workspace(WorkspaceError::Invalid) => StatusCode::BAD_REQUEST,
             Self::Gateway(error) => return error.into_response(),
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Storage(_) | Self::Workspace(WorkspaceError::State | WorkspaceError::Storage) => {
+            Self::Storage(_)
+            | Self::Workspace(WorkspaceError::State | WorkspaceError::Storage)
+            | Self::Limit(LimitError::TokenBudget | LimitError::State | LimitError::Storage) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             Self::ModelProtocol => StatusCode::BAD_GATEWAY,

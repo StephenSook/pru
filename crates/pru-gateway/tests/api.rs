@@ -366,3 +366,19 @@ async fn gateway_rejects_request_bodies_over_the_named_limit() {
         )
     );
 }
+
+#[tokio::test]
+async fn workspace_request_rate_returns_the_named_public_message() {
+    let harness = harness();
+    for _ in 0..pru_gateway::limits::MAX_REQUESTS_PER_WORKSPACE_PER_WINDOW {
+        let (status, _) = request(&harness.app, Method::GET, "/v1/demo/clients", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, response) = request(&harness.app, Method::GET, "/v1/demo/clients", None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response["error"],
+        pru_gateway::limits::WORKSPACE_RATE_LIMIT_MESSAGE
+    );
+}

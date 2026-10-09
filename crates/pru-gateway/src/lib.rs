@@ -24,14 +24,21 @@ use pru_ssn::SsnSpan;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 pub mod api;
 pub mod chat;
+pub mod limits;
 pub mod workspace;
+
+use limits::{LimitError, TokenBudget, TokenReservation};
 
 pub const TOKEN_FACTORY_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
+pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
+pub const LOCAL_MODEL_BUSY_MESSAGE: &str =
+    "The public demo's local model is busy. Please wait for the current generation to finish.";
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -46,6 +53,8 @@ struct GatewayInner {
     config: GatewayConfig,
     ledger: Mutex<EgressLedger>,
     clock: Arc<dyn Clock>,
+    token_budget: TokenBudget,
+    local_generation_slots: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -142,6 +151,10 @@ pub enum GatewayError {
     Upstream(String),
     #[error("egress ledger failed: {0}")]
     Ledger(String),
+    #[error(transparent)]
+    Limit(#[from] LimitError),
+    #[error("{LOCAL_MODEL_BUSY_MESSAGE}")]
+    LocalModelBusy,
 }
 
 impl IntoResponse for GatewayError {
@@ -150,7 +163,14 @@ impl IntoResponse for GatewayError {
             Self::UnknownAction(_) => StatusCode::NOT_FOUND,
             Self::Consent(_) | Self::PolicyDenied(_) => StatusCode::FORBIDDEN,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
-            Self::Ledger(_) | Self::Policy(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Limit(LimitError::IpRate | LimitError::WorkspaceRate)
+            | Self::Limit(LimitError::TokenBudget)
+            | Self::LocalModelBusy => StatusCode::TOO_MANY_REQUESTS,
+            Self::Ledger(_)
+            | Self::Policy(_)
+            | Self::Limit(LimitError::State | LimitError::Storage) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }
@@ -315,6 +335,7 @@ impl GatewayState {
         )?;
         let authorizer =
             EgressAuthorizer::new().map_err(|error| GatewayError::Policy(error.to_string()))?;
+        let token_budget = TokenBudget::new(config.client_data_root.as_deref(), clock.now())?;
         Ok(Self {
             inner: Arc::new(GatewayInner {
                 consent_verifier,
@@ -324,6 +345,8 @@ impl GatewayState {
                 config,
                 ledger: Mutex::new(ledger),
                 clock,
+                token_budget,
+                local_generation_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_LOCAL_GENERATIONS)),
             }),
         })
     }
@@ -567,6 +590,27 @@ async fn execute_gateway_action(
         return Err(GatewayError::PolicyDenied(diagnostics));
     }
 
+    let admission = match acquire_model_admission(state, action, route, now) {
+        Ok(admission) => admission,
+        Err(error) => {
+            let reason = error.to_string();
+            append_ledger(
+                state,
+                now,
+                &request,
+                LedgerDecision {
+                    action,
+                    outcome: "deny",
+                    route,
+                    policy_reason: &reason,
+                    model_id: model_for(state, action, route),
+                    spans: &spans,
+                },
+            )?;
+            return Err(error);
+        }
+    };
+
     // Record the authorization decision before any permitted side effect.
     let ledger_entry_id = append_ledger(
         state,
@@ -594,7 +638,15 @@ async fn execute_gateway_action(
         ),
         GatewayAction::LlmComplete | GatewayAction::ChatComplete => (
             false,
-            Some(call_llm(state, route, request.arguments).await?),
+            Some(
+                call_llm(
+                    state,
+                    route,
+                    request.arguments,
+                    admission.expect("model actions acquire admission"),
+                )
+                .await?,
+            ),
         ),
     };
     Ok(ActionResponse {
@@ -608,6 +660,35 @@ async fn execute_gateway_action(
         model_id: model_for(state, action, route).map(str::to_owned),
         result,
     })
+}
+
+enum ModelAdmission {
+    Local(OwnedSemaphorePermit),
+    Hosted(TokenReservation),
+}
+
+fn acquire_model_admission(
+    state: &GatewayState,
+    action: GatewayAction,
+    route: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<ModelAdmission>, GatewayError> {
+    if !matches!(
+        action,
+        GatewayAction::LlmComplete | GatewayAction::ChatComplete
+    ) {
+        return Ok(None);
+    }
+    if route == "local" {
+        let permit = Arc::clone(&state.inner.local_generation_slots)
+            .try_acquire_owned()
+            .map_err(|_| GatewayError::LocalModelBusy)?;
+        Ok(Some(ModelAdmission::Local(permit)))
+    } else {
+        Ok(Some(ModelAdmission::Hosted(
+            state.inner.token_budget.reserve(now)?,
+        )))
+    }
 }
 
 fn append_ledger(
@@ -638,6 +719,7 @@ async fn call_llm(
     state: &GatewayState,
     route: &str,
     mut body: Value,
+    admission: ModelAdmission,
 ) -> Result<Value, GatewayError> {
     let (base_url, model, key) = if route == "local" {
         (
@@ -678,6 +760,18 @@ async fn call_llm(
         .json::<Value>()
         .await
         .map_err(|error| GatewayError::Upstream(format!("decode {status}: {error}")))?;
+    match admission {
+        ModelAdmission::Hosted(reservation) => {
+            if let Some(actual_tokens) = value
+                .get("usage")
+                .and_then(|usage| usage.get("total_tokens"))
+                .and_then(Value::as_u64)
+            {
+                reservation.commit(state.inner.clock.now(), actual_tokens)?;
+            }
+        }
+        ModelAdmission::Local(_permit) => {}
+    }
     Ok(value)
 }
 
@@ -767,5 +861,22 @@ pub(crate) fn validate_client_id(client_id: &str) -> Result<(), GatewayError> {
         Err(GatewayError::Consent(
             "client id must use 1 to 64 ASCII letters, digits, hyphens, or underscores".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn local_generation_limit_refuses_a_second_concurrent_permit() {
+        let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_LOCAL_GENERATIONS));
+        let first = Arc::clone(&slots)
+            .try_acquire_owned()
+            .expect("first local generation permit");
+        assert!(Arc::clone(&slots).try_acquire_owned().is_err());
+        drop(first);
+        assert!(Arc::clone(&slots).try_acquire_owned().is_ok());
+        assert_eq!(MAX_CONCURRENT_LOCAL_GENERATIONS, 1);
     }
 }
