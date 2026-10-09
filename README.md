@@ -27,7 +27,7 @@ Phase B part 1 adds one judge-facing URL at `http://127.0.0.1:3000`. The browser
 
 The image starts three processes. Next.js serves the page. The Axum gateway owns consent checks, Cedar decisions, model routing, and the per-client JSONL ledger. A CPU-only llama-server runs NVIDIA Nemotron 3 Nano 4B for SSN-bearing context. SSN-free context with active use consent may go to `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Email and calendar tools remain dry runs.
 
-The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears every consent and ledger and recreates the clients in the ephemeral `/tmp/pru-data` directory. Real taxpayer data is barred by 26 U.S.C. 7216.
+The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears only the current browser's consents and ledgers, then recreates its clients under `/tmp/pru-data/<workspace-id>/`. Real taxpayer data is barred by 26 U.S.C. 7216.
 
 Build and run the image from PowerShell. The key comes from the environment and is not copied into an image layer.
 
@@ -38,6 +38,37 @@ docker run --rm --name pru-phase-b1 -p 3000:3000 -e NEBIUS_API_KEY pru:phase-b1
 ```
 
 Open `http://127.0.0.1:3000`. Stop the container with `docker stop pru-phase-b1`.
+
+## Hosted door
+
+The same image is designed to sit behind an HTTPS ingress on a public URL. The public page accepts test clients only. It tells visitors that their workspace belongs to their browser, expires after one idle hour, and must never receive real taxpayer data.
+
+Each visitor receives a random UUIDv4 in the `pru_workspace` cookie. The cookie is `HttpOnly`, `SameSite=Lax`, scoped to `/`, and renewed with a 3,600-second lifetime on each API response. The Next.js server validates the cookie and sends the workspace id to the loopback-only gateway. Browser credentials and caller-supplied internal headers are not forwarded.
+
+The gateway stores that visitor's two TEST DATA clients, consent records, and ledgers under `/tmp/pru-data/<workspace-id>/`. `Reset demo` takes an exclusive lock and resets only that directory. A last-access marker makes the one-hour idle rule survive process restarts. Cleanup runs every 60 seconds and deletes expired workspaces. At most 200 workspaces may be active at once. A new visitor receives a clear `503` response when the instance is full.
+
+The public limits are fixed in code and covered by tests:
+
+| Control | Value |
+|---|---:|
+| Request body | 16,384 bytes |
+| Request window | 60 seconds |
+| Requests per workspace per window | 30 |
+| Requests per IP per window | 120 |
+| Active workspaces | 200 |
+| Workspace idle lifetime | 3,600 seconds |
+| Workspace cleanup interval | 60 seconds |
+| Token Factory budget per UTC day | 250,000 tokens |
+| Token Factory reservation per in-flight call | 32,000 tokens |
+| Concurrent local-model generations | 1 |
+
+The hosted-token budget belongs to the whole instance and is persisted at `/tmp/pru-data/.instance/token-budget.json`. Each hosted call reserves 32,000 tokens before network contact, then reconciles the reservation to the provider's `usage.total_tokens`. A failed or malformed hosted response keeps the full reservation charged. Once the 250,000-token daily budget is spent, hosted calls receive a plain `429` message until the next UTC day. Local-model requests never consume that budget. A second concurrent local generation receives a plain `429` busy message.
+
+Set `PRU_TRUSTED_CLIENT_IP_HEADER` to the single client-IP header that the hosting ingress overwrites. The proxy validates that header as an IPv4 or IPv6 address and replaces any caller-supplied gateway IP header. If this setting is absent or invalid, requests share the fail-closed `unknown` IP bucket. Do not trust a header that visitors can set without the ingress replacing it.
+
+Visitor input containing an SSN-shaped value is accepted only when the value is in a never-issued range: area `000`, area `666`, area `900` through `999`, group `00`, or serial `0000`. Any other SSN-shaped value is refused before workspace creation, model contact, ledger writes, or value-bearing logs. The response never repeats the value and says: `This public demo accepts test data only. Do not enter real taxpayer data. 26 U.S.C. 7216.`
+
+The host polls `GET /healthz`. It returns `200` only when the Next.js route can reach the gateway and the gateway can reach llama-server's local `/health` endpoint. It never calls Token Factory. During startup or after a local-model failure it returns `503` with component states. The image gives the CPU model a 210-second health-check start period.
 
 The local model layer is pinned and checked during the build:
 

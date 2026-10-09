@@ -27,7 +27,9 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Consent PIN minimum length | `5` | `crates/pru-consent/src/lib.rs:19-20` (`MINIMUM_PIN_LENGTH`); check at `:401-406` | MEASURED |
 | PIN hash algorithm | `"argon2id"` | `crates/pru-consent/src/lib.rs:59-61` and `:94`; test at `:664` asserts `$argon2id$` | MEASURED |
 | Judge-door test PIN | `"53179"` | `web/src/ui/JudgeDoor.tsx:7` | MEASURED |
-| Judge-door legal note | `"TEST DATA ONLY. Real taxpayer data is barred by 26 U.S.C. 7216."` | `web/src/ui/JudgeDoor.tsx:199` | MEASURED |
+| Judge-door public notice | `"This demo accepts test clients only. Your workspace is private to this browser and is deleted after one idle hour. Do not enter real taxpayer data."` | `web/src/ui/JudgeDoor.tsx` (`legal-note`) | MEASURED |
+| Never-issued SSN ranges accepted by the public door | `area 000, area 666, area 900-999, group 00, or serial 0000` | `crates/pru-ssn/src/lib.rs` (`test_only`) and its five-range unit test | MEASURED |
+| Potentially issued SSN refusal | `"This public demo accepts test data only. Do not enter real taxpayer data. 26 U.S.C. 7216."` | `crates/pru-gateway/src/api.rs` (`REAL_SSN_REFUSAL_MESSAGE`); disk, model, ledger, and log absence test in `tests/chat_api.rs` | MEASURED |
 | Cedar SSN forbid | `resource.contains_ssn && resource.destination_region != "local"` | `crates/pru-policy/cedar/live.cedar:32-39` | MEASURED |
 | Cedar use permit requires matching unexpired use consent | `context.consent_kind == "use"` plus client, purpose, and expiry checks | `crates/pru-policy/cedar/live.cedar:2-13` | MEASURED |
 | Cedar disclose permit requires matching unexpired disclose consent | `context.consent_kind == "disclose"` plus client, recipient, purpose, and expiry checks | `crates/pru-policy/cedar/live.cedar:17-29` | MEASURED |
@@ -37,9 +39,18 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Ledger stores keyed Blake3 hashes of matched spans | `blake3::keyed_hash(&self.hash_key, span.matched.as_bytes())` | `crates/pru-gateway/src/lib.rs:230-238` | MEASURED |
 | Chat answers redact detected SSNs | `"[SSN kept local]"` | `crates/pru-gateway/src/chat.rs:380-387` | MEASURED |
 | Email and calendar remain dry-run | `"sent": false` | `crates/pru-gateway/tests/gateway.rs:293-295` (`response.dry_run` and `result["sent"] == false`) | MEASURED |
-| Next.js proxy allowlist | `v1/demo/(clients\|reset)`, `v1/clients/{id}/(chat\|ledger\|consents)`, revoke by UUID | `web/src/app/api/pru/[...path]/route.ts:6-11` | MEASURED |
-| Next.js proxy max body | `16384` | `web/src/app/api/pru/[...path]/route.ts:4` | MEASURED |
-| Next.js proxy does not forward browser credentials | no `authorization` or `cookie` on the gateway `fetch` | `web/src/app/api/pru/[...path]/route.ts:34-38` | MEASURED |
+| Next.js proxy allowlist | `v1/demo/(clients\|reset)`, `v1/clients/{id}/(chat\|ledger\|consents)`, revoke by UUID | `web/src/app/api/pru/[...path]/route.ts` (`ALLOWED`) | MEASURED |
+| Next.js proxy max body | `16384` | `web/src/app/api/pru/[...path]/route.ts` (`MAX_BODY_BYTES`) | MEASURED |
+| Next.js proxy does not forward browser credentials | no `authorization` or browser `cookie` on the gateway `fetch` | `web/tests/api-route.test.ts` (`forwards an allowed request without browser credentials`) | MEASURED |
+| Workspace cookie | `pru_workspace`, random UUIDv4, `HttpOnly`, `SameSite=Lax`, `Max-Age=3600` | `web/src/app/api/pru/[...path]/route.ts`; two-context Playwright test in `web/tests/e2e/workspace-isolation.spec.ts` | MEASURED |
+| Workspace storage root | `/tmp/pru-data/<workspace-id>/` | `Dockerfile` (`PRU_DATA_DIR`); `crates/pru-gateway/src/workspace.rs`; isolation test in `crates/pru-gateway/tests/api.rs` | MEASURED |
+| Workspace idle lifetime and cleanup interval | `3600 seconds; 60 seconds` | `crates/pru-gateway/src/workspace.rs` (`WORKSPACE_IDLE_TTL_SECS`, `WORKSPACE_CLEANUP_INTERVAL_SECS`) | MEASURED |
+| Active workspace cap | `200` | `crates/pru-gateway/src/workspace.rs` (`MAX_CONCURRENT_WORKSPACES`) | MEASURED |
+| Public request limits | `30 per workspace and 120 per IP per 60 seconds` | `crates/pru-gateway/src/limits.rs` (`MAX_REQUESTS_PER_WORKSPACE_PER_WINDOW`, `MAX_REQUESTS_PER_IP_PER_WINDOW`, `RATE_LIMIT_WINDOW_SECS`) | MEASURED |
+| Public request body cap | `16384 bytes` | `crates/pru-gateway/src/api.rs` (`MAX_REQUEST_BODY_BYTES`) and over-limit HTTP test | MEASURED |
+| Token Factory daily budget | `250000 tokens per UTC day; 32000-token in-flight reservation` | `crates/pru-gateway/src/limits.rs` (`DAILY_TOKEN_FACTORY_TOKEN_BUDGET`, `TOKEN_FACTORY_CALL_RESERVATION_TOKENS`) and persistence tests | MEASURED |
+| Concurrent local generations | `1` | `crates/pru-gateway/src/lib.rs` (`MAX_CONCURRENT_LOCAL_GENERATIONS`) and permit test | MEASURED |
+| Public readiness endpoint | `200 only when Next.js, the gateway, and llama-server are ready; no Token Factory call` | `web/src/app/healthz/route.ts`; `crates/pru-gateway/src/api.rs` (`healthz`); Rust and Vitest readiness tests | MEASURED |
 | llama-server starts without the Token Factory key | `env -u NEBIUS_API_KEY /opt/llama/llama-server` | `docker/entrypoint.sh:27` | MEASURED |
 | Next.js starts after the Token Factory key is unset | `unset NEBIUS_API_KEY` then `"$@"` | `docker/entrypoint.sh:72-74` | MEASURED |
 | Judge door fetches only `/api/pru/` | `fetch(\`/api/pru/${path}\`)` | `web/src/ui/JudgeDoor.tsx:15` (`api` helper) | MEASURED |
@@ -119,7 +130,7 @@ Spike notes live in the sibling gitignored tree `../pru/spike/` (this repository
 | OpenShell prover version used here | `"openshell-prover 0.1.2"` | command: `$HOME/.local/opt/openshell-prover-0.1.2/openshell-prover --version`; output: `openshell-prover 0.1.2` | MEASURED |
 | Compiled boundary self-check | `"within_boundary, exit 0"` | command: `OPENSHELL_PROVER=$HOME/.local/opt/openshell-prover-0.1.2/openshell-prover bash scripts/prove-boundaries.sh`; output: `case=compiled_boundary_self file=synthetic-client.yaml result: within_boundary exit=0` | MEASURED |
 | Planted extra host | `"exceeds_boundary, host=example.com:443, exit 1"` | same command; output: `case=planted_extra_host expected=exceeds_boundary result: exceeds_boundary host=example.com:443 exit=1`; script overall `EXIT=0` | MEASURED |
-| Cedar live policy implies reference R | `"NOT VERIFIED on this machine"` | Check: `bash scripts/install-cvc5.sh` then `bash scripts/run-symcc.sh` on a host with cvc5 1.3.1 and Rust 1.89. Windows has no `cvc5.exe`. WSL has cvc5 1.3.1 and no `rustc`. Tests are `crates/pru-policy/tests/symcc.rs:47` and `:59` (`required-features = ["symcc"]`) | NOT VERIFIED |
+| Cedar live policy implies reference R | `"2 SymCC tests passed with cvc5 1.3.1"` | command: `powershell -File scripts/run-symcc.ps1`; tests are `crates/pru-policy/tests/symcc.rs` with `required-features = ["symcc"]` | MEASURED |
 | cvc5 pin | `"1.3.1"` | `scripts/install-cvc5.sh:5`; checksum `1a1cda20d2df4938fa4944a69f33ddc9172e319ece0eed0aa09c4d7abede3ed1` at line 7 | MEASURED |
 | cedar-policy-symcc pin | `"0.7.0"` | `crates/pru-policy/Cargo.toml:19` | MEASURED |
 | CPU Docker first-token times from README | `"19.1551 / 11.7070 / 8.3718 s"` | README.md:57-59; no committed receipt under `eval/` | NOT VERIFIED |
@@ -143,32 +154,37 @@ CI workflow `.github/workflows/ci.yml` defines five jobs: `quality`, `formal-pro
 
 `container-build` steps: free runner disk; `docker/build-push-action` with `push: false`. The image carries the GGUF and compiles llama.cpp.
 
-Tracked `#[test]` / `#[tokio::test]` count before the FACTS parser test: 48, of which 2 are `crates/pru-policy/tests/symcc.rs` with `required-features = ["symcc"]` and are skipped by default `cargo test --workspace`. Default `cargo test --workspace` on this machine: 46 passed (2+2+8+4+6+6+5+5+8 across the crates that define tests).
+Default `cargo test --workspace` on this machine: 64 passed. The feature-gated SymCC run adds 2 passed tests from `crates/pru-policy/tests/symcc.rs`.
 
-Web unit tests: 3 vitest cases in `web/tests/api-route.test.ts`. Playwright: 1 consent-lifecycle test, 1 axe test, 4 overflow widths (`390`, `768`, `1024`, `1440`) in `web/tests/e2e/judge-door.spec.ts`. Playwright timeout `180000` ms at `web/playwright.config.ts:5`.
+Web unit tests: 6 vitest cases in 2 files. Playwright: 1 consent-lifecycle test, 1 workspace-isolation and reset test, 1 axe test, and 4 overflow widths (`390`, `768`, `1024`, `1440`). Playwright timeout is `180000` ms.
 
 Local gate results (Windows `cargo.exe` / `pnpm`, this session):
 
 | Claim | Exact value | Source | Tag |
 |---|---|---|---|
 | quality fmt | `0` | command: `cargo.exe fmt --all -- --check`; output: `EXIT_FMT=0` | MEASURED |
-| quality clippy | `0` | command: `cargo.exe clippy --workspace --all-targets --offline -- -D warnings`; output: `EXIT_CLIPPY=0` | MEASURED |
-| quality cargo test | `0` | command: `cargo.exe test --workspace --offline`; output: `EXIT_TEST=0` and 46 passed | MEASURED |
-| quality generate-ssn-eval | `0` | command: `cargo.exe run --offline -p pru-ssn --bin generate-ssn-eval -- eval/ssn_canaries.json`; output: `EXIT_EVAL=0` `positives=360 true_positives=360 misses=0 recall=1.000000` | MEASURED |
+| quality clippy | `0` | command: `cargo.exe clippy --workspace --all-targets -- -D warnings`; output: `EXIT_CLIPPY=0` | MEASURED |
+| quality cargo test | `0` | command: `cargo.exe test --workspace`; output: `EXIT_TEST=0` and 64 passed | MEASURED |
+| quality generate-ssn-eval | `0` | command: `cargo.exe run -p pru-ssn --bin generate-ssn-eval -- eval/ssn_canaries.json`; output: `EXIT_EVAL=0` `positives=360 true_positives=360 misses=0 recall=1.000000` | MEASURED |
 | quality canary diff | `0` | command: `git.exe diff --exit-code -- eval/ssn_canaries.json`; output: `EXIT_DIFF=0` | MEASURED |
 | web typecheck | `0` | command: `pnpm typecheck` in `web/`; output: `EXIT_TYPECHECK=0` | MEASURED |
 | web lint | `0` | command: `pnpm lint` in `web/`; output: `EXIT_LINT=0` | MEASURED |
-| web vitest | `"3 passed"` | command: `pnpm test` in `web/`; output: `Tests  3 passed (3)` `EXIT_TEST=0` | MEASURED |
+| web vitest | `"2 files, 6 tests passed"` | command: `pnpm test` in `web/`; output: `Test Files  2 passed (2)` and `Tests  6 passed (6)` | MEASURED |
 | web Next.js build | `0` | command: `pnpm build` in `web/`; output: `Next.js 16.3.6` `EXIT_BUILD=0` | MEASURED |
-| OpenShell prove-boundaries | `0` | command: `bash scripts/prove-boundaries.sh` with prover 0.1.2; output: overall `EXIT=0` | MEASURED |
+| web Playwright | `"7 passed"` | command: `pwsh -File scripts/run-web-e2e.ps1`; output: `7 passed` | MEASURED |
+| SymCC | `"2 passed"` | command: `powershell -File scripts/run-symcc.ps1`; output: cvc5 1.3.1, live implication held, planted violation produced a counterexample | MEASURED |
+| OpenShell prove-boundaries | `0` | command: `powershell -File scripts/prove-boundaries-wsl.ps1`; output: prover 0.1.2 accepted the generated policy and rejected the planted external network destination | MEASURED |
+| container build | `0` | command: `docker build --progress=plain -t pru:public-door-test .`; output: image size 6,150,825,015 bytes, 210-second health start period, zero baked `NEBIUS_API_KEY` entries | MEASURED |
 
-Gates that could not run here:
+All five CI job semantics ran on this machine. These exact Linux wrapper entry points could not run natively:
 
-| Gate | Why it did not run here |
+| Linux entry point | Native Windows equivalent used here |
 |---|---|
-| `formal-proofs` SymCC | Windows has no `cvc5.exe`. WSL has cvc5 1.3.1 at `~/.local/opt/cvc5-1.3.1` and no `rustc`. The installer would download cvc5, which this session forbids except for GitHub REST. |
-| `container-build` | Docker build fetches Hugging Face weights and llama.cpp; this session forbids those network calls and forbids deploy. |
-| `web-e2e` | CI script `scripts/run-web-e2e.sh` expects a Linux `target/debug/pru-gateway`. This session compiled with Windows `cargo.exe`, so the binary is `target/debug/pru-gateway.exe`. WSL has no `rustc` to rebuild. Vitest and `pnpm build` already passed. |
+| `bash scripts/run-symcc.sh` | `scripts/run-symcc.ps1` runs the same feature-gated Rust tests and cvc5 1.3.1. |
+| `bash scripts/prove-boundaries.sh` | `scripts/prove-boundaries-wsl.ps1` compiles the boundary on Windows and runs OpenShell prover 0.1.2 in WSL. |
+| `bash scripts/run-web-e2e.sh` | `pwsh -File scripts/run-web-e2e.ps1` starts the same gateway, model stub, and Next.js build, then runs the same Playwright suite against the Windows gateway binary. |
+| `pnpm --dir web exec playwright install --with-deps chromium` | The Linux package installation is not applicable on Windows. Installed Chromium ran all 7 Playwright cases. |
+| Ubuntu runner disk cleanup and `docker/build-push-action` | The runner cleanup is not applicable on Windows. Docker Desktop built the same Dockerfile with BuildKit and `push: false` behavior. |
 
 ## Do not claim
 
