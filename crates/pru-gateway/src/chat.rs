@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use crate::{
     ActionRequest, GatewayError,
-    api::{ApiError, ApiState, DemoClient, StoredConsent, read_consents, read_demo_client},
+    api::{
+        ApiError, ApiState, DemoClient, StoredConsent, read_consents, read_demo_client,
+        reject_potentially_issued_ssns,
+    },
 };
 
 const MAX_INPUT_CHARS: usize = 4_000;
@@ -63,6 +66,7 @@ pub async fn run_chat(
     client_id: &str,
     request: ChatRequest,
 ) -> Result<ChatResponse, ApiError> {
+    reject_potentially_issued_ssns([request.message.as_str()])?;
     state.ensure_demo_client(client_id)?;
     if request.message.chars().count() > MAX_INPUT_CHARS {
         return Err(ApiError::InvalidRequest(format!(

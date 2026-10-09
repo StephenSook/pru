@@ -1,4 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     Json, Router,
@@ -25,6 +30,7 @@ struct Harness {
     app: Router,
     local_calls: Arc<Mutex<Vec<Value>>>,
     remote_calls: Arc<Mutex<Vec<Value>>>,
+    root: std::path::PathBuf,
     _temp: TempDir,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -122,15 +128,53 @@ async fn harness() -> Harness {
         },
     )
     .expect("gateway state");
-    let api_state = ApiState::new(gateway, authority, root);
+    let api_state = ApiState::new(gateway, authority, root.clone());
     api_state.reset_demo().expect("seed demo clients");
     Harness {
         app: api_router(api_state),
         local_calls,
         remote_calls,
+        root,
         _temp: temp,
         tasks: vec![local_task, remote_task],
     }
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().expect("log capture lock").extend(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        LogWriter(Arc::clone(&self.0))
+    }
+}
+
+fn read_tree(root: &Path) -> String {
+    let mut contents = String::new();
+    for entry in fs::read_dir(root).expect("read data root") {
+        let path = entry.expect("directory entry").path();
+        if path.is_dir() {
+            contents.push_str(&read_tree(&path));
+        } else {
+            contents.push_str(&fs::read_to_string(path).expect("UTF-8 demo data"));
+        }
+    }
+    contents
 }
 
 async fn request(
@@ -325,4 +369,50 @@ async fn chat_rejects_more_than_four_thousand_characters() {
     let harness = harness().await;
     let (status, body, _) = chat(&harness.app, &"x".repeat(4_001)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn potentially_issued_ssn_is_refused_before_models_ledger_disk_or_logs() {
+    let harness = harness().await;
+    let refused = "123-45-6789";
+    let logs = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(logs.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let (status, body, response_text) = request(
+        &harness.app,
+        Method::POST,
+        &format!("/v1/clients/{CLIENT}/chat"),
+        Some(json!({
+            "message": "Use the test client already on file",
+            "ignored_ssn": refused
+        })),
+    )
+    .await;
+    drop(guard);
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(response_text.contains("26 U.S.C. 7216"));
+    assert!(!response_text.contains(refused));
+    assert!(harness.local_calls.lock().expect("local calls").is_empty());
+    assert!(
+        harness
+            .remote_calls
+            .lock()
+            .expect("remote calls")
+            .is_empty()
+    );
+    let disk_contents = read_tree(&harness.root);
+    assert!(disk_contents.contains("Avery Morgan"));
+    assert!(disk_contents.contains("Riley Chen"));
+    assert!(!disk_contents.contains(refused));
+
+    let captured_logs =
+        String::from_utf8(logs.0.lock().expect("log capture lock").clone()).expect("UTF-8 logs");
+    assert!(captured_logs.contains("refused potentially issued SSN-shaped visitor input"));
+    assert!(!captured_logs.contains(refused));
 }

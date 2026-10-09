@@ -369,6 +369,7 @@ impl GatewayState {
 pub fn router(state: GatewayState) -> Router {
     Router::new()
         .route("/v1/actions/{action}", post(handle_action))
+        .layer(axum::middleware::from_fn(api::visitor_input_guard))
         .with_state(state)
 }
 
@@ -654,6 +655,10 @@ fn scan_value(value: &Value) -> Vec<DetectedSpan> {
     detected
 }
 
+pub(crate) fn value_contains_potentially_issued_ssn(value: &Value) -> bool {
+    scan_value(value).iter().any(|span| !span.span.test_only)
+}
+
 fn scan_value_into(value: &Value, field_name: Option<&str>, detected: &mut Vec<DetectedSpan>) {
     match value {
         Value::String(text) => {
@@ -674,6 +679,7 @@ fn scan_value_into(value: &Value, field_name: Option<&str>, detected: &mut Vec<D
         }
         Value::Object(values) => {
             for (name, value) in values {
+                record_spans(name, pru_ssn::recognize(name), detected);
                 scan_value_into(value, Some(name), detected);
             }
         }

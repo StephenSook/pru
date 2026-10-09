@@ -1,8 +1,9 @@
 //! SSN span recognition and a deterministic synthetic canary evaluation.
 //!
-//! The recognizer deliberately accepts group `00`. The SSA does not issue that
-//! group, but IRS public test taxpayers use it. Such spans are marked
-//! `test_only` so a test identifier cannot be mistaken for a real taxpayer ID.
+//! The recognizer marks every SSA never-issued range as `test_only`: area
+//! `000`, area `666`, area `900` through `999`, group `00`, and serial `0000`.
+//! This lets callers distinguish safe test identifiers from values that could
+//! belong to a real taxpayer.
 
 use std::sync::OnceLock;
 
@@ -75,11 +76,7 @@ pub fn recognize(text: &str) -> Vec<SsnSpan> {
             let area = parse_component(&digits[0..3])?;
             let group = parse_component(&digits[3..5])?;
             let serial = parse_component(&digits[5..9])?;
-            let test_only = group == 0 || area >= 900;
-
-            if !test_only && (area == 0 || area == 666 || group == 0 || serial == 0) {
-                return None;
-            }
+            let test_only = area == 0 || area == 666 || area >= 900 || group == 0 || serial == 0;
 
             let format = if has_ocr_noise {
                 SsnFormat::OcrNoise
@@ -101,6 +98,13 @@ pub fn recognize(text: &str) -> Vec<SsnSpan> {
             })
         })
         .collect()
+}
+
+/// Return true when `text` contains an SSN-shaped value that is not in an SSA
+/// never-issued range.
+#[must_use]
+pub fn contains_potentially_issued_ssn(text: &str) -> bool {
+    recognize(text).iter().any(|span| !span.test_only)
 }
 
 fn candidate_regex() -> &'static Regex {
@@ -487,7 +491,9 @@ pub mod eval {
 
 #[cfg(test)]
 mod tests {
-    use super::{SsnFormat, TestSsnRange, recognize, synthetic_test_ssn};
+    use super::{
+        SsnFormat, TestSsnRange, contains_potentially_issued_ssn, recognize, synthetic_test_ssn,
+    };
 
     fn single(text: &str) -> super::SsnSpan {
         let spans = recognize(text);
@@ -527,6 +533,25 @@ mod tests {
     #[test]
     fn area_9xx_is_accepted_and_marked_test_only() {
         assert!(single("Synthetic SSN: 999-12-1001.").test_only);
+    }
+
+    #[test]
+    fn every_never_issued_range_is_test_only_and_an_issuable_shape_is_not() {
+        for value in [
+            "000-12-3456",
+            "666-12-3456",
+            "900-12-3456",
+            "123-00-3456",
+            "123-45-0000",
+        ] {
+            assert!(single(&format!("Synthetic SSN: {value}.")).test_only);
+            assert!(!contains_potentially_issued_ssn(&format!(
+                "Synthetic SSN: {value}."
+            )));
+        }
+
+        assert!(!single("Visitor SSN: 123-45-6789.").test_only);
+        assert!(contains_potentially_issued_ssn("Visitor SSN: 123-45-6789."));
     }
 
     #[test]

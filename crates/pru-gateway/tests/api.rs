@@ -243,3 +243,46 @@ async fn invalid_client_path_cannot_escape_the_data_root() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(!harness.root.join("client..evil").exists());
 }
+
+#[tokio::test]
+async fn consent_input_refuses_a_potentially_issued_ssn_before_storage() {
+    let harness = harness();
+    let mut body = consent_body(None);
+    body["purpose"] = json!("Prepare return for SSN 123-45-6789");
+    let (status, response) = request(
+        &harness.app,
+        Method::POST,
+        &format!("/v1/clients/{CLIENT_A}/consents"),
+        Some(body),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let encoded = serde_json::to_string(&response).expect("response JSON");
+    assert!(encoded.contains("26 U.S.C. 7216"));
+    assert!(!encoded.contains("123-45-6789"));
+    let stored = std::fs::read_to_string(harness.root.join(CLIENT_A).join("consents.json"))
+        .expect("stored consent list");
+    assert_eq!(stored.trim(), "[]");
+}
+
+#[tokio::test]
+async fn gateway_rejects_request_bodies_over_the_named_limit() {
+    let harness = harness();
+    let (status, response) = request(
+        &harness.app,
+        Method::POST,
+        &format!("/v1/clients/{CLIENT_A}/chat"),
+        Some(json!({"message": "x".repeat(pru_gateway::api::MAX_REQUEST_BODY_BYTES)})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        response["error"],
+        format!(
+            "request body exceeds {} bytes",
+            pru_gateway::api::MAX_REQUEST_BODY_BYTES
+        )
+    );
+}

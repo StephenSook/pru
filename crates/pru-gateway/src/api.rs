@@ -6,8 +6,10 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
-    http::StatusCode,
+    body::{Body, to_bytes},
+    extract::{Path as AxumPath, Request, State},
+    http::{Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -20,6 +22,10 @@ use uuid::Uuid;
 
 use crate::chat::{ChatRequest, ChatResponse, run_chat};
 use crate::{GatewayError, GatewayState, validate_client_id};
+
+pub const REAL_SSN_REFUSAL_MESSAGE: &str =
+    "This public demo accepts test data only. Do not enter real taxpayer data. 26 U.S.C. 7216.";
+pub const MAX_REQUEST_BODY_BYTES: usize = 16_384;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -97,7 +103,36 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/v1/clients/{client}/ledger", get(get_ledger))
         .route("/v1/clients/{client}/chat", post(chat))
+        .layer(middleware::from_fn(visitor_input_guard))
         .with_state(state)
+}
+
+pub(crate) async fn visitor_input_guard(request: Request, next: Next) -> Response {
+    if request.method() != Method::POST {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => return ApiError::PayloadTooLarge.into_response(),
+    };
+    if !bytes.is_empty() {
+        let value = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return ApiError::InvalidRequest("request body must be valid JSON".to_owned())
+                    .into_response();
+            }
+        };
+        if crate::value_contains_potentially_issued_ssn(&value) {
+            tracing::warn!("refused potentially issued SSN-shaped visitor input");
+            return ApiError::RealSsn.into_response();
+        }
+    }
+
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 async fn healthz() -> Json<Value> {
@@ -222,6 +257,13 @@ async fn mint_consent(
     AxumPath(client): AxumPath<String>,
     Json(request): Json<MintConsentRequest>,
 ) -> Result<(StatusCode, Json<ConsentView>), ApiError> {
+    reject_potentially_issued_ssns(
+        request
+            .recipient
+            .iter()
+            .map(String::as_str)
+            .chain([request.purpose.as_str(), request.pin.as_str()]),
+    )?;
     state.ensure_demo_client(&client)?;
     let signed_at = Utc::now();
     let record = ConsentRecord::new(
@@ -355,6 +397,20 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ApiError> {
     })
 }
 
+pub(crate) fn reject_potentially_issued_ssns<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+) -> Result<(), ApiError> {
+    if values
+        .into_iter()
+        .any(pru_ssn::contains_potentially_issued_ssn)
+    {
+        tracing::warn!("refused potentially issued SSN-shaped visitor input");
+        Err(ApiError::RealSsn)
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error(transparent)]
@@ -367,6 +423,10 @@ pub enum ApiError {
     Storage(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    #[error("{REAL_SSN_REFUSAL_MESSAGE}")]
+    RealSsn,
+    #[error("request body exceeds {MAX_REQUEST_BODY_BYTES} bytes")]
+    PayloadTooLarge,
     #[error("model response was invalid")]
     ModelProtocol,
 }
@@ -377,8 +437,10 @@ impl IntoResponse for ApiError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Consent(_)
             | Self::Gateway(GatewayError::Consent(_))
-            | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            | Self::InvalidRequest(_)
+            | Self::RealSsn => StatusCode::BAD_REQUEST,
             Self::Gateway(error) => return error.into_response(),
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ModelProtocol => StatusCode::BAD_GATEWAY,
         };
