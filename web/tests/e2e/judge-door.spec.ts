@@ -13,6 +13,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("runs the three preset routes and the consent lifecycle", async ({ page }) => {
+  await expect(page.getByText("This demo accepts test clients only.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Your workspace is private to this browser and is deleted after one idle hour.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Do not enter real taxpayer data.", { exact: false })).toBeVisible();
   await page.getByLabel("Consent kind").selectOption("use");
   await page.getByRole("button", { name: "Mint test consent" }).click();
   await expect(page.getByText("Test consent active")).toBeVisible();

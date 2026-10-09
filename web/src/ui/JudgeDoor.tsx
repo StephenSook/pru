@@ -196,7 +196,9 @@ export function JudgeDoor() {
         </div>
       </header>
 
-      <div className="legal-note"><strong>TEST DATA ONLY.</strong> Real taxpayer data is barred by 26 U.S.C. 7216.</div>
+      <div className="legal-note">
+        <strong>PUBLIC DEMO.</strong> This demo accepts test clients only. Your workspace is private to this browser and is deleted after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
+      </div>
 
       <section className="client-strip" aria-label="Select a test client">
         <label htmlFor="client">Client boundary</label>
