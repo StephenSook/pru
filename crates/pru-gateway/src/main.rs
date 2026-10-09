@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let authority = ConsentAuthority::new();
     let gateway = GatewayState::new(authority.verifier(), Default::default(), config)?;
     let api_state = ApiState::new(gateway.clone(), authority, data_root);
-    api_state.reset_demo()?;
+    let _workspace_cleanup = api_state.start_workspace_cleanup();
     let app = api_router(api_state).merge(router(gateway));
     let bind = env::var("PRU_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;

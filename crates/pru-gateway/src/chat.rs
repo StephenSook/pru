@@ -10,6 +10,7 @@ use crate::{
         ApiError, ApiState, DemoClient, StoredConsent, read_consents, read_demo_client,
         reject_potentially_issued_ssns,
     },
+    workspace::WorkspaceContext,
 };
 
 const MAX_INPUT_CHARS: usize = 4_000;
@@ -63,6 +64,7 @@ struct ProposedCalendar {
 
 pub async fn run_chat(
     state: &ApiState,
+    workspace: &WorkspaceContext,
     client_id: &str,
     request: ChatRequest,
 ) -> Result<ChatResponse, ApiError> {
@@ -79,8 +81,8 @@ pub async fn run_chat(
         ));
     }
 
-    let client = read_demo_client(state, client_id)?;
-    let consents = read_consents(state, client_id)?;
+    let client = read_demo_client(state, workspace, client_id)?;
+    let consents = read_consents(state, workspace, client_id)?;
     let mut messages = vec![
         json!({
             "role": "system",
@@ -114,6 +116,7 @@ pub async fn run_chat(
         });
         let action_request = ActionRequest {
             client_id: client_id.to_owned(),
+            workspace_id: Some(workspace.id()),
             consent_token: use_consent
                 .map(|consent| consent.token.clone())
                 .unwrap_or_default(),
@@ -128,7 +131,7 @@ pub async fn run_chat(
         {
             Ok(action) => action,
             Err(error @ (GatewayError::Consent(_) | GatewayError::PolicyDenied(_))) => {
-                let step = denied_step(state, client_id, "model", None, &error)?;
+                let step = denied_step(state, workspace, client_id, "model", None, &error)?;
                 let answer = step.policy_reason.clone();
                 steps.push(step);
                 return Ok(ChatResponse {
@@ -196,7 +199,7 @@ pub async fn run_chat(
         }
         messages.push(Value::Object(message.clone()));
         for call in calls {
-            let tool_result = execute_tool(state, client_id, &consents, &call).await?;
+            let tool_result = execute_tool(state, workspace, client_id, &consents, &call).await?;
             let tool_call_id = call
                 .get("id")
                 .and_then(Value::as_str)
@@ -270,6 +273,7 @@ fn select_consent<'a>(
 
 async fn execute_tool(
     state: &ApiState,
+    workspace: &WorkspaceContext,
     client_id: &str,
     consents: &[StoredConsent],
     call: &Value,
@@ -310,6 +314,7 @@ async fn execute_tool(
         .unwrap_or_else(|| DEFAULT_PURPOSE.to_owned());
     let request = ActionRequest {
         client_id: client_id.to_owned(),
+        workspace_id: Some(workspace.id()),
         consent_token: consent
             .map(|consent| consent.token.clone())
             .unwrap_or_default(),
@@ -333,7 +338,7 @@ async fn execute_tool(
             tool_name: Some(name.to_owned()),
         }),
         Err(error @ (GatewayError::Consent(_) | GatewayError::PolicyDenied(_))) => {
-            denied_step(state, client_id, "tool", Some(name), &error)
+            denied_step(state, workspace, client_id, "tool", Some(name), &error)
         }
         Err(error) => Err(error.into()),
     }
@@ -341,6 +346,7 @@ async fn execute_tool(
 
 fn denied_step(
     state: &ApiState,
+    workspace: &WorkspaceContext,
     client_id: &str,
     kind: &str,
     tool_name: Option<&str>,
@@ -348,7 +354,7 @@ fn denied_step(
 ) -> Result<ChatStep, ApiError> {
     let entry = state
         .gateway()
-        .ledger_entries(client_id)?
+        .ledger_entries_in_workspace(&workspace.id(), client_id)?
         .into_iter()
         .next()
         .ok_or(ApiError::ModelProtocol)?;

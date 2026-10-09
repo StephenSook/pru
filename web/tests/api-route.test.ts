@@ -23,8 +23,20 @@ describe("server-side gateway route", () => {
     expect(await response.json()).toEqual([{ id: "demo-avery" }]);
     expect(gateway).toHaveBeenCalledOnce();
     const [, init] = gateway.mock.calls[0] as [string, RequestInit];
-    expect(init.headers).toBeUndefined();
+    const headers = new Headers(init.headers);
+    expect(headers.get("x-pru-workspace-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(headers.get("x-pru-client-ip")).toBe("unknown");
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("cookie")).toBeNull();
     expect(JSON.stringify(init)).not.toContain("browser-secret");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const cookie = response.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("pru_workspace=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=lax");
+    expect(cookie).toContain("Max-Age=3600");
   });
 
   it("rejects paths outside the fixed gateway surface", async () => {
@@ -51,12 +63,38 @@ describe("server-side gateway route", () => {
       new NextRequest("http://judge.test/api/pru/v1/clients/demo-avery/chat", {
         method: "POST",
         body: JSON.stringify({ message: "hello" }),
+        headers: {
+          cookie: "pru_workspace=11111111-1111-4111-8111-111111111111",
+          "x-pru-workspace-id": "attacker-value",
+        },
       }),
       { params: Promise.resolve({ path: ["v1", "clients", "demo-avery", "chat"] }) },
     );
 
     expect(response.status).toBe(403);
     const [, init] = gateway.mock.calls[0] as [string, RequestInit];
-    expect(init.headers).toEqual({ "content-type": "application/json" });
+    const headers = new Headers(init.headers);
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("x-pru-workspace-id")).toBe("11111111-1111-4111-8111-111111111111");
+    expect(headers.get("x-pru-workspace-id")).not.toBe("attacker-value");
+  });
+
+  it("forwards only a validated address from the configured ingress header", async () => {
+    vi.stubEnv("PRU_TRUSTED_CLIENT_IP_HEADER", "x-host-client-ip");
+    const gateway = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", gateway);
+
+    await GET(
+      new NextRequest("http://judge.test/api/pru/v1/demo/clients", {
+        headers: {
+          "x-host-client-ip": "203.0.113.10",
+          "x-pru-client-ip": "198.51.100.99",
+        },
+      }),
+      { params: Promise.resolve({ path: ["v1", "demo", "clients"] }) },
+    );
+
+    const [, init] = gateway.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-pru-client-ip")).toBe("203.0.113.10");
   });
 });

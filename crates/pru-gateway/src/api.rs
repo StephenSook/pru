@@ -7,8 +7,8 @@ use std::{
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
-    extract::{Path as AxumPath, Request, State},
-    http::{Method, StatusCode},
+    extract::{Extension, Path as AxumPath, Request, State},
+    http::{HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -21,6 +21,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::chat::{ChatRequest, ChatResponse, run_chat};
+use crate::workspace::{WORKSPACE_HEADER, WorkspaceContext, WorkspaceError, WorkspaceManager};
 use crate::{GatewayError, GatewayState, validate_client_id};
 
 pub const REAL_SSN_REFUSAL_MESSAGE: &str =
@@ -31,7 +32,7 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 16_384;
 pub struct ApiState {
     gateway: GatewayState,
     authority: Arc<ConsentAuthority>,
-    data_root: PathBuf,
+    workspaces: WorkspaceManager,
     storage_lock: Arc<Mutex<()>>,
 }
 
@@ -41,7 +42,7 @@ impl ApiState {
         Self {
             gateway,
             authority: Arc::new(authority),
-            data_root,
+            workspaces: WorkspaceManager::new(data_root),
             storage_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -51,16 +52,19 @@ impl ApiState {
         &self.gateway
     }
 
-    pub fn reset_demo(&self) -> Result<Vec<DemoClientView>, ApiError> {
+    pub fn reset_demo(
+        &self,
+        workspace: &WorkspaceContext,
+    ) -> Result<Vec<DemoClientView>, ApiError> {
         let _guard = self
             .storage_lock
             .lock()
             .map_err(|_| ApiError::Storage("demo storage lock poisoned".to_owned()))?;
         for client in demo_clients() {
-            for consent in read_consents_unlocked(&self.data_root, &client.id)? {
+            for consent in read_consents_unlocked(workspace.root(), &client.id)? {
                 self.gateway.revoke(consent.revocation_id)?;
             }
-            let directory = client_directory(&self.data_root, &client.id)?;
+            let directory = client_directory(workspace.root(), &client.id)?;
             fs::create_dir_all(&directory).map_err(|error| {
                 ApiError::Storage(format!("create {}: {error}", directory.display()))
             })?;
@@ -73,6 +77,11 @@ impl ApiState {
                 .map_err(|error| ApiError::Storage(format!("clear ledger: {error}")))?;
         }
         Ok(demo_clients().iter().map(DemoClientView::from).collect())
+    }
+
+    pub fn start_workspace_cleanup(&self) -> tokio::task::JoinHandle<()> {
+        let workspaces = self.workspaces.clone();
+        tokio::spawn(workspaces.cleanup_loop())
     }
 
     pub(crate) fn ensure_demo_client(&self, client: &str) -> Result<(), ApiError> {
@@ -89,6 +98,7 @@ impl ApiState {
 }
 
 pub fn api_router(state: ApiState) -> Router {
+    let workspace_state = state.clone();
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/demo/clients", get(list_demo_clients))
@@ -103,8 +113,44 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/v1/clients/{client}/ledger", get(get_ledger))
         .route("/v1/clients/{client}/chat", post(chat))
+        .layer(middleware::from_fn_with_state(
+            workspace_state,
+            workspace_guard,
+        ))
         .layer(middleware::from_fn(visitor_input_guard))
         .with_state(state)
+}
+
+async fn workspace_guard(
+    State(state): State<ApiState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() == "/healthz" {
+        return next.run(request).await;
+    }
+    let workspace_id = match workspace_header(request.headers()) {
+        Ok(workspace_id) => workspace_id,
+        Err(error) => return error.into_response(),
+    };
+    let exclusive = request.uri().path() == "/v1/demo/reset";
+    let (workspace, is_new) = match state.workspaces.acquire(workspace_id, exclusive).await {
+        Ok(result) => result,
+        Err(error) => return ApiError::Workspace(error).into_response(),
+    };
+    if is_new && let Err(error) = state.reset_demo(&workspace) {
+        state.workspaces.abandon_new(&workspace).await;
+        return error.into_response();
+    }
+    request.extensions_mut().insert(workspace);
+    next.run(request).await
+}
+
+fn workspace_header(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get(WORKSPACE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::Workspace(WorkspaceError::Invalid))
 }
 
 pub(crate) async fn visitor_input_guard(request: Request, next: Next) -> Response {
@@ -192,20 +238,26 @@ fn demo_clients() -> Vec<DemoClient> {
     ]
 }
 
-async fn list_demo_clients() -> Json<Vec<DemoClientView>> {
+async fn list_demo_clients(
+    Extension(_workspace): Extension<WorkspaceContext>,
+) -> Json<Vec<DemoClientView>> {
     Json(demo_clients().iter().map(DemoClientView::from).collect())
 }
 
-async fn reset_demo(State(state): State<ApiState>) -> Result<Json<Vec<DemoClientView>>, ApiError> {
-    Ok(Json(state.reset_demo()?))
+async fn reset_demo(
+    State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
+) -> Result<Json<Vec<DemoClientView>>, ApiError> {
+    Ok(Json(state.reset_demo(&workspace)?))
 }
 
 async fn chat(
     State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
     AxumPath(client): AxumPath<String>,
     Json(request): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    Ok(Json(run_chat(&state, &client, request).await?))
+    Ok(Json(run_chat(&state, &workspace, &client, request).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,6 +306,7 @@ impl From<&StoredConsent> for ConsentView {
 
 async fn mint_consent(
     State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
     AxumPath(client): AxumPath<String>,
     Json(request): Json<MintConsentRequest>,
 ) -> Result<(StatusCode, Json<ConsentView>), ApiError> {
@@ -288,26 +341,30 @@ async fn mint_consent(
         record,
     };
     let view = ConsentView::from(&stored);
-    with_consents(&state, &client, |consents| consents.push(stored))?;
+    with_consents(&state, &workspace, &client, |consents| {
+        consents.push(stored);
+    })?;
     Ok((StatusCode::CREATED, Json(view)))
 }
 
 async fn list_consents(
     State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
     AxumPath(client): AxumPath<String>,
 ) -> Result<Json<Vec<ConsentView>>, ApiError> {
     state.ensure_demo_client(&client)?;
-    let consents = read_consents(&state, &client)?;
+    let consents = read_consents(&state, &workspace, &client)?;
     Ok(Json(consents.iter().map(ConsentView::from).collect()))
 }
 
 async fn revoke_consent(
     State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
     AxumPath((client, id)): AxumPath<(String, Uuid)>,
 ) -> Result<Json<ConsentView>, ApiError> {
     state.ensure_demo_client(&client)?;
     let mut revoked = None;
-    with_consents(&state, &client, |consents| {
+    with_consents(&state, &workspace, &client, |consents| {
         if let Some(consent) = consents.iter_mut().find(|consent| consent.id == id) {
             consent.revoked = true;
             revoked = Some(consent.clone());
@@ -320,10 +377,15 @@ async fn revoke_consent(
 
 async fn get_ledger(
     State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
     AxumPath(client): AxumPath<String>,
 ) -> Result<Json<Vec<Value>>, ApiError> {
     state.ensure_demo_client(&client)?;
-    Ok(Json(state.gateway.ledger_entries(&client)?))
+    Ok(Json(
+        state
+            .gateway
+            .ledger_entries_in_workspace(&workspace.id(), &client)?,
+    ))
 }
 
 fn client_directory(root: &Path, client: &str) -> Result<PathBuf, ApiError> {
@@ -333,17 +395,19 @@ fn client_directory(root: &Path, client: &str) -> Result<PathBuf, ApiError> {
 
 pub(crate) fn read_consents(
     state: &ApiState,
+    workspace: &WorkspaceContext,
     client: &str,
 ) -> Result<Vec<StoredConsent>, ApiError> {
     let _guard = state
         .storage_lock
         .lock()
         .map_err(|_| ApiError::Storage("consent storage lock poisoned".to_owned()))?;
-    read_consents_unlocked(&state.data_root, client)
+    read_consents_unlocked(workspace.root(), client)
 }
 
 fn with_consents(
     state: &ApiState,
+    workspace: &WorkspaceContext,
     client: &str,
     update: impl FnOnce(&mut Vec<StoredConsent>),
 ) -> Result<(), ApiError> {
@@ -351,9 +415,9 @@ fn with_consents(
         .storage_lock
         .lock()
         .map_err(|_| ApiError::Storage("consent storage lock poisoned".to_owned()))?;
-    let mut consents = read_consents_unlocked(&state.data_root, client)?;
+    let mut consents = read_consents_unlocked(workspace.root(), client)?;
     update(&mut consents);
-    let directory = client_directory(&state.data_root, client)?;
+    let directory = client_directory(workspace.root(), client)?;
     fs::create_dir_all(&directory)
         .map_err(|error| ApiError::Storage(format!("create {}: {error}", directory.display())))?;
     let path = directory.join("consents.json");
@@ -373,9 +437,13 @@ fn read_consents_unlocked(root: &Path, client: &str) -> Result<Vec<StoredConsent
     }
 }
 
-pub(crate) fn read_demo_client(state: &ApiState, client: &str) -> Result<DemoClient, ApiError> {
+pub(crate) fn read_demo_client(
+    state: &ApiState,
+    workspace: &WorkspaceContext,
+    client: &str,
+) -> Result<DemoClient, ApiError> {
     state.ensure_demo_client(client)?;
-    let path = client_directory(&state.data_root, client)?.join("client.json");
+    let path = client_directory(workspace.root(), client)?.join("client.json");
     let body = fs::read(&path)
         .map_err(|error| ApiError::Storage(format!("read {}: {error}", path.display())))?;
     serde_json::from_slice(&body)
@@ -417,6 +485,8 @@ pub enum ApiError {
     Gateway(#[from] GatewayError),
     #[error(transparent)]
     Consent(#[from] pru_consent::ConsentError),
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
     #[error("consent not found")]
     NotFound,
     #[error("storage failed: {0}")]
@@ -435,13 +505,19 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Workspace(WorkspaceError::Capacity | WorkspaceError::Deleting) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Consent(_)
             | Self::Gateway(GatewayError::Consent(_))
             | Self::InvalidRequest(_)
-            | Self::RealSsn => StatusCode::BAD_REQUEST,
+            | Self::RealSsn
+            | Self::Workspace(WorkspaceError::Invalid) => StatusCode::BAD_REQUEST,
             Self::Gateway(error) => return error.into_response(),
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Storage(_) | Self::Workspace(WorkspaceError::State | WorkspaceError::Storage) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             Self::ModelProtocol => StatusCode::BAD_GATEWAY,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()

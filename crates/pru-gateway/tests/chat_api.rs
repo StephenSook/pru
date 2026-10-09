@@ -17,6 +17,7 @@ use pru_consent::{ConsentAuthority, RevocationList};
 use pru_gateway::{
     GatewayConfig, GatewayState,
     api::{ApiState, api_router},
+    workspace::WORKSPACE_HEADER,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -25,6 +26,7 @@ use tower::ServiceExt;
 
 const CLIENT: &str = "demo-avery";
 const PURPOSE: &str = "prepare this synthetic tax client's return";
+const WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
 
 struct Harness {
     app: Router,
@@ -129,7 +131,6 @@ async fn harness() -> Harness {
     )
     .expect("gateway state");
     let api_state = ApiState::new(gateway, authority, root.clone());
-    api_state.reset_demo().expect("seed demo clients");
     Harness {
         app: api_router(api_state),
         local_calls,
@@ -183,7 +184,10 @@ async fn request(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value, String) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(WORKSPACE_HEADER, WORKSPACE);
     let bytes = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         serde_json::to_vec(&body).expect("request json")
@@ -407,8 +411,7 @@ async fn potentially_issued_ssn_is_refused_before_models_ledger_disk_or_logs() {
             .is_empty()
     );
     let disk_contents = read_tree(&harness.root);
-    assert!(disk_contents.contains("Avery Morgan"));
-    assert!(disk_contents.contains("Riley Chen"));
+    assert!(!harness.root.join(WORKSPACE).exists());
     assert!(!disk_contents.contains(refused));
 
     let captured_logs =

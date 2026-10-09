@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 pub mod api;
 pub mod chat;
+pub mod workspace;
 
 pub const TOKEN_FACTORY_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
@@ -75,6 +76,8 @@ impl Clock for SystemClock {
 #[derive(Debug, Deserialize)]
 pub struct ActionRequest {
     pub client_id: String,
+    #[serde(skip)]
+    pub workspace_id: Option<String>,
     pub consent_token: String,
     pub purpose: String,
     #[serde(default)]
@@ -212,10 +215,23 @@ impl EgressLedger {
         })
     }
 
-    fn path_for(&self, client_id: &str) -> Result<PathBuf, GatewayError> {
+    fn path_for(
+        &self,
+        workspace_id: Option<&str>,
+        client_id: &str,
+    ) -> Result<PathBuf, GatewayError> {
         if let Some(root) = &self.client_data_root {
             validate_client_id(client_id)?;
-            Ok(root.join(client_id).join("ledger.jsonl"))
+            let workspace_id = workspace_id
+                .ok_or_else(|| GatewayError::Consent("workspace context is required".to_owned()))?;
+            let parsed = Uuid::parse_str(workspace_id)
+                .map_err(|_| GatewayError::Consent("workspace context is invalid".to_owned()))?;
+            if parsed.to_string() != workspace_id {
+                return Err(GatewayError::Consent(
+                    "workspace context is invalid".to_owned(),
+                ));
+            }
+            Ok(root.join(workspace_id).join(client_id).join("ledger.jsonl"))
         } else {
             Ok(self.path.clone())
         }
@@ -249,7 +265,7 @@ impl EgressLedger {
             contains_ssn: !decision.spans.is_empty(),
             span_hashes,
         };
-        let path = self.path_for(&request.client_id)?;
+        let path = self.path_for(request.workspace_id.as_deref(), &request.client_id)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 GatewayError::Ledger(format!("create {}: {error}", parent.display()))
@@ -322,13 +338,29 @@ impl GatewayState {
     }
 
     pub fn ledger_entries(&self, client_id: &str) -> Result<Vec<Value>, GatewayError> {
+        self.ledger_entries_at(None, client_id)
+    }
+
+    pub fn ledger_entries_in_workspace(
+        &self,
+        workspace_id: &str,
+        client_id: &str,
+    ) -> Result<Vec<Value>, GatewayError> {
+        self.ledger_entries_at(Some(workspace_id), client_id)
+    }
+
+    fn ledger_entries_at(
+        &self,
+        workspace_id: Option<&str>,
+        client_id: &str,
+    ) -> Result<Vec<Value>, GatewayError> {
         validate_client_id(client_id)?;
         let ledger = self
             .inner
             .ledger
             .lock()
             .map_err(|_| GatewayError::Ledger("ledger lock poisoned".to_owned()))?;
-        let path = ledger.path_for(client_id)?;
+        let path = ledger.path_for(workspace_id, client_id)?;
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),

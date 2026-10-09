@@ -10,6 +10,7 @@ use pru_consent::{ConsentAuthority, RevocationList};
 use pru_gateway::{
     GatewayConfig, GatewayState,
     api::{ApiState, api_router},
+    workspace::WORKSPACE_HEADER,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -17,6 +18,8 @@ use tower::ServiceExt;
 
 const CLIENT_A: &str = "demo-avery";
 const CLIENT_B: &str = "demo-riley";
+const WORKSPACE_A: &str = "11111111-1111-4111-8111-111111111111";
+const WORKSPACE_B: &str = "22222222-2222-4222-8222-222222222222";
 
 struct Harness {
     app: Router,
@@ -44,7 +47,6 @@ fn harness() -> Harness {
     )
     .expect("gateway state");
     let api_state = ApiState::new(gateway, authority, root.clone());
-    api_state.reset_demo().expect("seed demo clients");
     Harness {
         app: api_router(api_state),
         root,
@@ -58,7 +60,20 @@ async fn request(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    request_in_workspace(app, WORKSPACE_A, method, uri, body).await
+}
+
+async fn request_in_workspace(
+    app: &Router,
+    workspace: &str,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(WORKSPACE_HEADER, workspace);
     let bytes = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
         serde_json::to_vec(&body).expect("request json")
@@ -115,8 +130,14 @@ async fn consent_endpoints_hash_pin_list_redacted_fields_and_revoke() {
     assert!(created.get("token").is_none());
     assert!(created.get("pin_hash").is_none());
 
-    let stored = std::fs::read_to_string(harness.root.join(CLIENT_A).join("consents.json"))
-        .expect("stored consents");
+    let stored = std::fs::read_to_string(
+        harness
+            .root
+            .join(WORKSPACE_A)
+            .join(CLIENT_A)
+            .join("consents.json"),
+    )
+    .expect("stored consents");
     assert!(!stored.contains("53179"));
     assert!(stored.contains("$argon2id$"));
 
@@ -170,8 +191,22 @@ async fn client_a_records_are_not_visible_through_client_b_routes() {
     .await;
     assert_eq!(client_a.as_array().expect("client A list").len(), 1);
     assert!(client_b.as_array().expect("client B list").is_empty());
-    assert!(harness.root.join(CLIENT_A).join("consents.json").is_file());
-    assert!(harness.root.join(CLIENT_B).join("consents.json").is_file());
+    assert!(
+        harness
+            .root
+            .join(WORKSPACE_A)
+            .join(CLIENT_A)
+            .join("consents.json")
+            .is_file()
+    );
+    assert!(
+        harness
+            .root
+            .join(WORKSPACE_A)
+            .join(CLIENT_B)
+            .join("consents.json")
+            .is_file()
+    );
 }
 
 #[tokio::test]
@@ -241,7 +276,7 @@ async fn invalid_client_path_cannot_escape_the_data_root() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(!harness.root.join("client..evil").exists());
+    assert!(!harness.root.join(WORKSPACE_A).join("client..evil").exists());
 }
 
 #[tokio::test]
@@ -261,9 +296,54 @@ async fn consent_input_refuses_a_potentially_issued_ssn_before_storage() {
     let encoded = serde_json::to_string(&response).expect("response JSON");
     assert!(encoded.contains("26 U.S.C. 7216"));
     assert!(!encoded.contains("123-45-6789"));
-    let stored = std::fs::read_to_string(harness.root.join(CLIENT_A).join("consents.json"))
-        .expect("stored consent list");
-    assert_eq!(stored.trim(), "[]");
+    assert!(!harness.root.join(WORKSPACE_A).exists());
+}
+
+#[tokio::test]
+async fn reset_only_changes_the_calling_workspace() {
+    let harness = harness();
+    for workspace in [WORKSPACE_A, WORKSPACE_B] {
+        let (status, created) = request_in_workspace(
+            &harness.app,
+            workspace,
+            Method::POST,
+            &format!("/v1/clients/{CLIENT_A}/consents"),
+            Some(consent_body(None)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+    }
+
+    let (status, _) = request_in_workspace(
+        &harness.app,
+        WORKSPACE_A,
+        Method::POST,
+        "/v1/demo/reset",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, workspace_a) = request_in_workspace(
+        &harness.app,
+        WORKSPACE_A,
+        Method::GET,
+        &format!("/v1/clients/{CLIENT_A}/consents"),
+        None,
+    )
+    .await;
+    let (_, workspace_b) = request_in_workspace(
+        &harness.app,
+        WORKSPACE_B,
+        Method::GET,
+        &format!("/v1/clients/{CLIENT_A}/consents"),
+        None,
+    )
+    .await;
+    assert!(workspace_a.as_array().expect("workspace A list").is_empty());
+    assert_eq!(workspace_b.as_array().expect("workspace B list").len(), 1);
+    assert!(harness.root.join(WORKSPACE_A).is_dir());
+    assert!(harness.root.join(WORKSPACE_B).is_dir());
 }
 
 #[tokio::test]
