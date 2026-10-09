@@ -6,9 +6,30 @@ export async function GET() {
       signal: AbortSignal.timeout(2_000),
       cache: "no-store",
     });
-    if (!response.ok) throw new Error("gateway unhealthy");
-    return NextResponse.json({ status: "ok" });
+    const gateway = (await response.json()) as {
+      status?: string;
+      gateway?: string;
+      llama?: string;
+    };
+    if (!response.ok) {
+      return NextResponse.json(
+        {
+          status: "starting",
+          next: "ready",
+          gateway: gateway.gateway ?? "unavailable",
+          llama: gateway.llama ?? "unavailable",
+        },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
+    return NextResponse.json(
+      { status: "ready", next: "ready", gateway: "ready", llama: "ready" },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch {
-    return NextResponse.json({ status: "unhealthy" }, { status: 503 });
+    return NextResponse.json(
+      { status: "starting", next: "ready", gateway: "unavailable", llama: "unknown" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   }
 }

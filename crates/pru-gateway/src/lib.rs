@@ -60,6 +60,7 @@ struct GatewayInner {
 #[derive(Clone)]
 pub struct GatewayConfig {
     pub local_base_url: String,
+    pub local_health_url: String,
     pub local_model: String,
     pub local_api_key: Option<String>,
     pub token_factory_base_url: String,
@@ -358,6 +359,16 @@ impl GatewayState {
             .map_err(|_| GatewayError::Consent("revocation lock poisoned".to_owned()))?
             .revoke(revocation_id);
         Ok(())
+    }
+
+    pub async fn local_model_ready(&self) -> bool {
+        self.inner
+            .client
+            .get(&self.inner.config.local_health_url)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
     }
 
     pub fn ledger_entries(&self, client_id: &str) -> Result<Vec<Value>, GatewayError> {

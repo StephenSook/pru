@@ -80,6 +80,7 @@ try {
             PRU_DATA_DIR = $dataDir
             PRU_LEDGER_HASH_KEY = ('1' * 64)
             PRU_LOCAL_LLM_URL = 'http://127.0.0.1:8082/v1'
+            PRU_LOCAL_LLM_HEALTH_URL = 'http://127.0.0.1:8082/health'
             PRU_TOKEN_FACTORY_URL = 'http://127.0.0.1:8082/v1'
             NEBIUS_API_KEY = 'ci-test-key'
         } `

@@ -216,8 +216,28 @@ pub(crate) async fn visitor_input_guard(request: Request, next: Next) -> Respons
         .await
 }
 
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+async fn healthz(State(state): State<ApiState>) -> Response {
+    if state.gateway.local_model_ready().await {
+        (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ready",
+                "gateway": "ready",
+                "llama": "ready"
+            })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "starting",
+                "gateway": "ready",
+                "llama": "unavailable"
+            })),
+        )
+            .into_response()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

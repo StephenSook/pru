@@ -119,6 +119,7 @@ async fn harness() -> Harness {
         authority.verifier(),
         RevocationList::default(),
         GatewayConfig {
+            local_health_url: format!("{}/health", local_url.trim_end_matches("/v1")),
             local_base_url: local_url,
             local_model: "nemotron-3-nano-4b".to_owned(),
             local_api_key: None,

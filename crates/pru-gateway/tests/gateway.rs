@@ -96,6 +96,7 @@ async fn harness(kind: ConsentKind, recipient: Option<&str>) -> (Harness, String
     .expect("consent record");
     let token = authority.mint(&record, "12345").expect("mint token");
     let config = GatewayConfig {
+        local_health_url: format!("{}/health", local_url.trim_end_matches("/v1")),
         local_base_url: local_url,
         local_model: "nemotron-3-nano-4b".to_owned(),
         local_api_key: Some("synthetic-local-key".to_owned()),

@@ -32,6 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = GatewayConfig {
         local_base_url: env::var("PRU_LOCAL_LLM_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8081/v1".to_owned()),
+        local_health_url: env::var("PRU_LOCAL_LLM_HEALTH_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8081/health".to_owned()),
         local_model: env::var("PRU_LOCAL_LLM_MODEL")
             .unwrap_or_else(|_| "nemotron-3-nano-4b".to_owned()),
         local_api_key: env::var("PRU_LOCAL_LLM_API_KEY").ok(),

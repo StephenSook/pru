@@ -62,6 +62,7 @@ ENV NODE_ENV=production \
     PRU_BIND=127.0.0.1:8787 \
     PRU_GATEWAY_URL=http://127.0.0.1:8787 \
     PRU_LOCAL_LLM_URL=http://127.0.0.1:8081/v1 \
+    PRU_LOCAL_LLM_HEALTH_URL=http://127.0.0.1:8081/health \
     PRU_LOCAL_LLM_MODEL=nemotron-3-nano-4b \
     PRU_DATA_DIR=/tmp/pru-data \
     RUST_LOG=pru_gateway=info
@@ -73,7 +74,7 @@ COPY scripts/benchmark-local-model.mjs /app/benchmark-local-model.mjs
 COPY docker/entrypoint.sh /usr/local/bin/pru-entrypoint
 RUN chmod 0755 /usr/local/bin/pru-entrypoint
 EXPOSE 3000
-HEALTHCHECK --interval=10s --timeout=3s --start-period=90s --retries=6 CMD curl --fail --silent http://127.0.0.1:3000/healthz >/dev/null || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --start-period=210s --retries=6 CMD curl --fail --silent http://127.0.0.1:3000/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pru-entrypoint"]
 
 FROM runtime-base AS runtime

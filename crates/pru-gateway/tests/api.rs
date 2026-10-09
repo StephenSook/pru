@@ -14,6 +14,7 @@ use pru_gateway::{
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 const CLIENT_A: &str = "demo-avery";
@@ -28,6 +29,10 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_with_health_url("http://127.0.0.1:1/health")
+}
+
+fn harness_with_health_url(local_health_url: &str) -> Harness {
     let temp = TempDir::new().expect("temp directory");
     let root = temp.path().join("clients");
     let authority = ConsentAuthority::new();
@@ -36,6 +41,7 @@ fn harness() -> Harness {
         RevocationList::default(),
         GatewayConfig {
             local_base_url: "http://127.0.0.1:1/v1".to_owned(),
+            local_health_url: local_health_url.to_owned(),
             local_model: "synthetic-local-model".to_owned(),
             local_api_key: None,
             token_factory_base_url: "http://127.0.0.1:2/v1".to_owned(),
@@ -52,6 +58,18 @@ fn harness() -> Harness {
         root,
         _temp: temp,
     }
+}
+
+async fn health_stub() -> (String, JoinHandle<()>) {
+    let app = Router::new().route("/health", axum::routing::get(|| async { StatusCode::OK }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind health stub");
+    let address = listener.local_addr().expect("health stub address");
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve health stub");
+    });
+    (format!("http://{address}/health"), task)
 }
 
 async fn request(
@@ -108,10 +126,21 @@ fn consent_body(recipient: Option<&str>) -> Value {
 
 #[tokio::test]
 async fn health_endpoint_reports_ok() {
-    let harness = harness();
+    let (health_url, task) = health_stub().await;
+    let harness = harness_with_health_url(&health_url);
     let (status, body) = request(&harness.app, Method::GET, "/healthz", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({"status": "ok"}));
+    assert_eq!(
+        body,
+        json!({"status": "ready", "gateway": "ready", "llama": "ready"})
+    );
+
+    task.abort();
+    let _ = task.await;
+    let (status, body) = request(&harness.app, Method::GET, "/healthz", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["gateway"], "ready");
+    assert_eq!(body["llama"], "unavailable");
 }
 
 #[tokio::test]
