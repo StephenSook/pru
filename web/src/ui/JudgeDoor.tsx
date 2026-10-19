@@ -254,7 +254,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       </header>
 
       <div className="legal-note">
-        <strong>PUBLIC DEMO.</strong> This demo accepts test clients only. Your workspace is private to this browser and is deleted after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
+        <strong>PUBLIC DEMO.</strong> This demo accepts test clients only. An unused browser workspace expires after 10 idle minutes. After you mint consent or run chat, it expires after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
       </div>
 
       <section className="client-strip" aria-label="Select a test client">

@@ -1,8 +1,8 @@
 # Pru
 
-Pru is a tax-practice assistant for a solo preparer or small practice. The plan runs Hermes Agent inside NVIDIA OpenShell through NemoClaw; that runtime is proven in a separate spike and is not wired into the product code yet (Phase A and Phase B below say what is). A Rust gateway is the only permitted egress path. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment.
+Pru is a tax-practice assistant for a solo preparer or small practice. The plan runs Hermes Agent inside NVIDIA OpenShell through NemoClaw; that runtime is proven in a separate spike and is not wired into the product code yet. The sections below say what is wired. A Rust gateway is the only permitted egress path. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment.
 
-Pru keeps SSN-bearing prompts on the PC and routes them to a local OpenAI-compatible llama-server running NVIDIA Nemotron 3 Nano 4B. It may send consented, SSN-free prompts to NVIDIA Nemotron on Nebius Token Factory. Phase A uses only code-generated synthetic canaries. The product plan permits the IRS's public test taxpayers, labelled as test data, but this repository contains no real taxpayer data.
+Pru keeps SSN-bearing prompts on the same machine as its gateway and routes them to a local OpenAI-compatible llama-server running NVIDIA Nemotron 3 Nano 4B. It may send consented, SSN-free prompts to NVIDIA Nemotron on Nebius Token Factory. Phase A uses only code-generated synthetic canaries. The product plan permits the IRS's public test taxpayers, labelled as test data, but this repository contains no real taxpayer data.
 
 ## What phase A proves
 
@@ -21,31 +21,42 @@ The formal proof covers the Cedar decision logic. It does not prove that the gat
 
 This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R. 301.7216-3, Rev. Proc. 2013-14, or any specific disclosure.
 
-## Phase B part 1
+## Test build
 
-Phase B part 1 adds one judge-facing URL at `http://127.0.0.1:3000`. The browser talks only to a fixed Next.js server route. The server route talks to the Rust gateway on the container loopback interface. The browser never receives `NEBIUS_API_KEY`.
+The test build gives a judge one URL at `http://127.0.0.1:3000`. The browser talks only to a fixed Next.js server route. The server route talks to the Rust gateway on the container loopback interface. The browser never receives `NEBIUS_API_KEY`.
 
 The image starts three processes. Next.js serves the page. The Axum gateway owns consent checks, Cedar decisions, model routing, and the per-client JSONL ledger. A CPU-only llama-server runs NVIDIA Nemotron 3 Nano 4B for SSN-bearing context. SSN-free context with active use consent may go to `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Email and calendar tools remain dry runs.
 
 The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears only the current browser's consents and ledgers, then recreates its clients under `/tmp/pru-data/<workspace-id>/`. Real taxpayer data is barred by 26 U.S.C. 7216.
 
-Build and run the image from PowerShell. The key comes from the environment and is not copied into an image layer.
+From PowerShell, build the image and start it without a key:
 
 ```powershell
-docker build -t pru:phase-b1 .
-$env:NEBIUS_API_KEY = [Environment]::GetEnvironmentVariable('NEBIUS_API_KEY', 'User')
-docker run --rm --name pru-phase-b1 -p 3000:3000 -e NEBIUS_API_KEY pru:phase-b1
+docker build -t pru:test .
+docker run --rm --name pru-test -p 3000:3000 pru:test
 ```
 
-Open `http://127.0.0.1:3000`. Stop the container with `docker stop pru-phase-b1`.
+Open `http://127.0.0.1:3000`. The container log says `Token Factory disabled`. Test clients, consent, the local SSN route, and the decision ledger work without a key. A turn that needs Token Factory is refused before network contact with `Token Factory is disabled because this build has no NEBIUS_API_KEY.` The ledger records a `deny` with reason `token_factory_not_configured`; the page shows the same refusal in plain words.
 
-## Hosted door
+To exercise Token Factory, stop the keyless container and start a new one with the key inherited from the PowerShell environment. The key is not copied into an image layer.
 
-The same image is designed to sit behind an HTTPS ingress on a public URL. The public page accepts test clients only. It tells visitors that their workspace belongs to their browser, expires after one idle hour, and must never receive real taxpayer data.
+```powershell
+docker stop pru-test
+$env:NEBIUS_API_KEY = [Environment]::GetEnvironmentVariable('NEBIUS_API_KEY', 'User')
+docker run --rm --name pru-test -p 3000:3000 -e NEBIUS_API_KEY pru:test
+```
+
+Stop either container with `docker stop pru-test`.
+
+## Hosted during judging
+
+The owner plans to run the same image on a Nebius Serverless endpoint from December 1 through December 15, 2026. Outside that judging window, use the test build above. The planned endpoint is `cpu-d3` with 4 vCPU and 16 GB RAM. This is an operating decision, not a claim that the endpoint already exists. No cloud resource was created while preparing this repository.
+
+The hosted image sits behind the endpoint's managed HTTPS ingress. The public page accepts test clients only and must never receive real taxpayer data. Set `PRU_HOSTED_DOOR=1` so the page describes `LOCAL` as `this server's own model, never sent to a model provider`. Keep `PRU_LOCAL_THREADS=4` explicit in the deployment even though the container now defaults to `nproc`.
 
 Each visitor receives a random UUIDv4 in the `pru_workspace` cookie. The cookie is `HttpOnly`, `SameSite=Lax`, scoped to `/`, and renewed with a 3,600-second lifetime on each API response. The Next.js server validates the cookie and sends the workspace id to the loopback-only gateway. Browser credentials and caller-supplied internal headers are not forwarded.
 
-The gateway stores that visitor's two TEST DATA clients, consent records, and ledgers under `/tmp/pru-data/<workspace-id>/`. `Reset demo` takes an exclusive lock and resets only that directory. A last-access marker makes the one-hour idle rule survive process restarts. Cleanup runs every 60 seconds and deletes expired workspaces. At most 200 workspaces may be active at once. A new visitor receives a clear `503` response when the instance is full.
+The gateway stores that visitor's two TEST DATA clients, consent records, and ledgers under `/tmp/pru-data/<workspace-id>/`. `Reset demo` takes an exclusive lock and resets only that directory. A workspace that has never minted consent or started chat expires after 600 idle seconds. Once either action touches it, the idle lifetime is 3,600 seconds. Both rules survive process restarts. Cleanup runs every 60 seconds. At most 200 workspaces may be active at once. At capacity, the gateway evicts the least recently used untouched workspace. It never evicts a touched workspace early; if all 200 are touched, a new visitor receives a clear `503` response.
 
 The public limits are fixed in code and covered by tests:
 
@@ -56,7 +67,8 @@ The public limits are fixed in code and covered by tests:
 | Requests per workspace per window | 30 |
 | Requests per IP per window | 120 |
 | Active workspaces | 200 |
-| Workspace idle lifetime | 3,600 seconds |
+| Untouched workspace idle lifetime | 600 seconds |
+| Touched workspace idle lifetime | 3,600 seconds |
 | Workspace cleanup interval | 60 seconds |
 | Token Factory budget per UTC day | 250,000 tokens |
 | Token Factory reservation per in-flight call | 32,000 tokens |
@@ -64,11 +76,13 @@ The public limits are fixed in code and covered by tests:
 
 The hosted-token budget belongs to the whole instance and is persisted at `/tmp/pru-data/.instance/token-budget.json`. Each hosted call reserves 32,000 tokens before network contact, then reconciles the reservation to the provider's `usage.total_tokens`. A failed or malformed hosted response keeps the full reservation charged. Once the 250,000-token daily budget is spent, hosted calls receive a plain `429` message until the next UTC day. Local-model requests never consume that budget. A second concurrent local generation receives a plain `429` busy message.
 
-Set `PRU_TRUSTED_CLIENT_IP_HEADER` to the single client-IP header that the hosting ingress overwrites. The proxy validates that header as an IPv4 or IPv6 address and replaces any caller-supplied gateway IP header. If this setting is absent or invalid, requests share the fail-closed `unknown` IP bucket. Do not trust a header that visitors can set without the ingress replacing it.
+Set `PRU_TRUSTED_CLIENT_IP_HEADER` only after checking what the hosting ingress overwrites or appends. For a single overwritten value, set only that variable. For an appended `X-Forwarded-For` chain, also set `PRU_TRUSTED_PROXY_HOPS` to the ingress position counted from the right. The proxy validates the selected value as an IPv4 or IPv6 address. An invalid header or hop count uses the fail-closed `unknown` IP bucket. The Nebius header name, chain shape, and hop count are NOT VERIFIED until the real endpoint is probed.
 
 Visitor input containing an SSN-shaped value is accepted only when the value is in a never-issued range: area `000`, area `666`, area `900` through `999`, group `00`, or serial `0000`. Any other SSN-shaped value is refused before workspace creation, model contact, ledger writes, or value-bearing logs. The response never repeats the value and says: `This public demo accepts test data only. Do not enter real taxpayer data. 26 U.S.C. 7216.`
 
 The host polls `GET /healthz`. It returns `200` only when the Next.js route can reach the gateway and the gateway can reach llama-server's local `/health` endpoint. It never calls Token Factory. During startup or after a local-model failure it returns `503` with component states. The image gives the CPU model a 210-second health-check start period.
+
+Chat responses stream an immediate progress record and a heartbeat every 10 seconds until the gateway returns. For a local turn, the page says `Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s`. On this PC with 4 CPUs and `PRU_LOCAL_THREADS=4`, the measured first local turn took 24.65 to 27.16 seconds across three fresh containers. Repeated or closely related turns took 4.62 to 6.73 seconds. Peak container memory during a cold local turn was 4,284,825,600 bytes. Latency, memory use, cold-start time, the client-IP header, and the managed ingress idle cutoff on the Nebius endpoint are NOT VERIFIED until deployment.
 
 The local model layer is pinned and checked during the build:
 
@@ -81,19 +95,19 @@ The local model layer is pinned and checked during the build:
 | SHA-256 | `be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2` |
 | License | [NVIDIA Nemotron Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-nemotron-open-model-license/) |
 
-llama.cpp is pinned to commit `a7fb71fab83b474a0892b9a05aaa3a8ddca2729b`, release `b11401`. The benchmark ran inside the Docker Desktop container on an Intel i7-9700K with eight CPU threads, a 300-token prompt, a forced 150-token answer, temperature 0, and three runs. Each run reported `stop_type: limit` and exactly 300 input plus 150 output tokens.
+llama.cpp is pinned to commit `a7fb71fab83b474a0892b9a05aaa3a8ddca2729b`, release `b11401`. The hosting scout ran the repository benchmark inside Docker Desktop on an Intel i7-9700K with 4 CPUs, `PRU_LOCAL_THREADS=4`, a 300-token prompt, a forced 150-token answer, temperature 0, and three runs.
 
 | Run | First token | Output speed |
 |---:|---:|---:|
-| 1 | 19.1551 s | 2.9792 tokens/s |
-| 2 | 11.7070 s | 0.9256 tokens/s |
-| 3 | 8.3718 s | 3.4185 tokens/s |
-| Median | 11.7070 s | 2.9792 tokens/s |
+| 1 | 11.5444 s | 5.9724 tokens/s |
+| 2 | 12.0676 s | 5.6617 tokens/s |
+| 3 | 10.9790 s | 4.7124 tokens/s |
+| Median | 11.5444 s | 5.6617 tokens/s |
 
 Re-run the measurement inside a running container:
 
 ```powershell
-docker exec pru-phase-b1 node /app/benchmark-local-model.mjs
+docker exec pru-test node /app/benchmark-local-model.mjs
 ```
 
 This part does not wire Hermes inside OpenShell on the hosted box, IRS ATS test taxpayers, Gmail or Calendar sending, a Windows Hello signer, or per-client SQLCipher memory. It does not prove that the gateway's context labels are truthful.
