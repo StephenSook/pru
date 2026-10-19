@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 const GATEWAY_URL = process.env.PRU_GATEWAY_URL ?? "http://127.0.0.1:8787";
 const MAX_BODY_BYTES = 16_384;
+const CHAT_TIMEOUT_MS = 300_000;
+const HEARTBEAT_INTERVAL_MS = 10_000;
 export const WORKSPACE_COOKIE = "pru_workspace";
 export const WORKSPACE_IDLE_TTL_SECONDS = 3_600;
 const WORKSPACE_HEADER = "x-pru-workspace-id";
@@ -44,7 +46,9 @@ function clientIp(request: NextRequest): string {
 }
 
 function forWorkspace(response: NextResponse, request: NextRequest, id: string): NextResponse {
-  response.headers.set("cache-control", "private, no-store");
+  if (!response.headers.has("cache-control")) {
+    response.headers.set("cache-control", "private, no-store");
+  }
   response.headers.set("vary", "Cookie");
   response.cookies.set(WORKSPACE_COOKIE, id, {
     httpOnly: true,
@@ -54,6 +58,67 @@ function forWorkspace(response: NextResponse, request: NextRequest, id: string):
     maxAge: WORKSPACE_IDLE_TTL_SECONDS,
   });
   return response;
+}
+
+function streamChat(url: string, init: RequestInit): NextResponse {
+  const encoder = new TextEncoder();
+  const abort = new AbortController();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: object) => {
+        if (!cancelled) controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      const finish = () => {
+        if (heartbeat) clearInterval(heartbeat);
+        if (timeout) clearTimeout(timeout);
+        if (!cancelled) controller.close();
+      };
+
+      send({ type: "progress", message: "Pru is checking consent and selecting a model." });
+      heartbeat = setInterval(() => {
+        send({ type: "heartbeat", message: "The bounded turn is still running." });
+      }, HEARTBEAT_INTERVAL_MS);
+      timeout = setTimeout(() => abort.abort(), CHAT_TIMEOUT_MS);
+
+      void fetch(url, { ...init, signal: abort.signal })
+        .then(async (response) => {
+          send({
+            type: "result",
+            status: response.status,
+            contentType: response.headers.get("content-type") ?? "application/json",
+            body: await response.text(),
+          });
+        })
+        .catch(() => {
+          send({
+            type: "result",
+            status: 502,
+            contentType: "application/json",
+            body: JSON.stringify({ error: "gateway unavailable" }),
+          });
+        })
+        .finally(finish);
+    },
+    cancel() {
+      cancelled = true;
+      if (heartbeat) clearInterval(heartbeat);
+      if (timeout) clearTimeout(timeout);
+      abort.abort();
+    },
+  });
+
+  return new NextResponse(stream, {
+    status: 200,
+    headers: {
+      "cache-control": "private, no-store, no-transform",
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "x-accel-buffering": "no",
+    },
+  });
 }
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
@@ -76,18 +141,27 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     }
   }
 
+  const headers = new Headers({
+    [WORKSPACE_HEADER]: id,
+    [CLIENT_IP_HEADER]: clientIp(request),
+  });
+  if (body) headers.set("content-type", "application/json");
+  const url = `${GATEWAY_URL}/${path}`;
+  const init: RequestInit = {
+    method: request.method,
+    body,
+    headers,
+    cache: "no-store",
+  };
+
+  if (request.method === "POST" && path.endsWith("/chat")) {
+    return forWorkspace(streamChat(url, init), request, id);
+  }
+
   try {
-    const headers = new Headers({
-      [WORKSPACE_HEADER]: id,
-      [CLIENT_IP_HEADER]: clientIp(request),
-    });
-    if (body) headers.set("content-type", "application/json");
     const response = await fetch(`${GATEWAY_URL}/${path}`, {
-      method: request.method,
-      body,
-      headers,
+      ...init,
       signal: AbortSignal.timeout(300_000),
-      cache: "no-store",
     });
     const responseBody = await response.text();
     return forWorkspace(

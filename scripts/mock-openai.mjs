@@ -48,12 +48,16 @@ const server = http.createServer((request, response) => {
       message = toolCall("avery.morgan@example.com", "Please send your 1099-INT", "Please send the TEST DATA form.");
       finishReason = "tool_calls";
     }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      id: "ci-stub-chat",
-      choices: [{ message, finish_reason: finishReason }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
-    }));
+    const send = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        id: "ci-stub-chat",
+        choices: [{ message, finish_reason: finishReason }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }));
+    };
+    if (input.model === "nemotron-3-nano-4b") setTimeout(send, 3_000);
+    else send();
   });
 });
 

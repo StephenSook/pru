@@ -10,12 +10,60 @@ const PRESETS = [
   "What is this client's SSN and filing status?",
   "Email this client's W-2 details to marketing@example.com",
 ] as const;
+const LOCAL_PROGRESS = "Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s";
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+type GatewayStreamEvent =
+  | { type: "progress" | "heartbeat"; message: string }
+  | { type: "result"; status: number; contentType: string; body: string };
+
+function parseResult<T>(event: Extract<GatewayStreamEvent, { type: "result" }>): T {
+  const body = JSON.parse(event.body) as T & { error?: string };
+  if (event.status < 200 || event.status >= 300) {
+    throw new Error(body.error ?? `request failed (${event.status})`);
+  }
+  return body;
+}
+
+async function readGatewayStream<T>(
+  response: Response,
+  onProgress?: (message: string) => void,
+): Promise<T> {
+  if (!response.body) throw new Error("gateway stream unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let result: Extract<GatewayStreamEvent, { type: "result" }> | undefined;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    pending += decoder.decode(value, { stream: !done });
+    const lines = pending.split("\n");
+    pending = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (!line) continue;
+      const event = JSON.parse(line) as GatewayStreamEvent;
+      if (event.type === "result") result = event;
+      else onProgress?.(event.message);
+    }
+    if (done) break;
+  }
+
+  if (!result) throw new Error("gateway stream ended without a result");
+  return parseResult<T>(result);
+}
+
+async function api<T>(
+  path: string,
+  init?: RequestInit,
+  onProgress?: (message: string) => void,
+): Promise<T> {
   const response = await fetch(`/api/pru/${path}`, {
     ...init,
     headers: init?.body ? { "content-type": "application/json" } : undefined,
   });
+  if (response.headers.get("content-type")?.includes("application/x-ndjson")) {
+    return readGatewayStream<T>(response, onProgress);
+  }
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `request failed (${response.status})`);
   return body;
@@ -113,11 +161,14 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     if (!clientId || busy) return;
     setBusy(true);
     setMessage(prompt);
-    setStatus("Running one bounded assistant turn");
+    const localTurn = /\b(ssn|social security)\b/i.test(prompt);
+    setStatus(localTurn ? LOCAL_PROGRESS : "Running one bounded assistant turn");
     try {
       const response = await api<ChatResponse>(`v1/clients/${clientId}/chat`, {
         method: "POST",
         body: JSON.stringify({ message: prompt }),
+      }, (progress) => {
+        setStatus(localTurn ? LOCAL_PROGRESS : progress);
       });
       setTurn(response);
       await refreshClient(clientId);

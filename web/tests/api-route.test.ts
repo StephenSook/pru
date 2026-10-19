@@ -2,6 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET, POST } from "../src/app/api/pru/[...path]/route";
 
+type StreamEvent = {
+  type: string;
+  status?: number;
+  body?: string;
+};
+
+async function streamEvents(response: Response): Promise<StreamEvent[]> {
+  return (await response.text())
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as StreamEvent);
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -55,7 +69,7 @@ describe("server-side gateway route", () => {
     expect(gateway).not.toHaveBeenCalled();
   });
 
-  it("preserves gateway status and sends only JSON content", async () => {
+  it("preserves gateway status inside the chat stream and sends only JSON upstream", async () => {
     const gateway = vi.fn().mockResolvedValue(new Response('{"error":"policy denied"}', {
       status: 403,
       headers: { "content-type": "application/json" },
@@ -74,12 +88,54 @@ describe("server-side gateway route", () => {
       { params: Promise.resolve({ path: ["v1", "clients", "demo-avery", "chat"] }) },
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    const events = await streamEvents(response);
+    expect(events[0]?.type).toBe("progress");
+    expect(events.at(-1)).toMatchObject({ type: "result", status: 403 });
+    expect(JSON.parse(events.at(-1)?.body ?? "{}")).toEqual({ error: "policy denied" });
     const [, init] = gateway.mock.calls[0] as [string, RequestInit];
     const headers = new Headers(init.headers);
     expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("x-pru-workspace-id")).toBe("11111111-1111-4111-8111-111111111111");
     expect(headers.get("x-pru-workspace-id")).not.toBe("attacker-value");
+  });
+
+  it("streams progress before the gateway produces a chat response", async () => {
+    let resolveGateway: ((response: Response) => void) | undefined;
+    const gateway = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveGateway = resolve;
+    }));
+    vi.stubGlobal("fetch", gateway);
+
+    const response = await POST(
+      new NextRequest("http://judge.test/api/pru/v1/clients/demo-avery/chat", {
+        method: "POST",
+        body: JSON.stringify({ message: "What is the test SSN?" }),
+      }),
+      { params: Promise.resolve({ path: ["v1", "clients", "demo-avery", "chat"] }) },
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const first = await reader!.read();
+    const firstEvent = JSON.parse(new TextDecoder().decode(first.value).trim()) as StreamEvent;
+    expect(firstEvent.type).toBe("progress");
+    expect(resolveGateway).toBeTypeOf("function");
+
+    resolveGateway!(new Response('{"answer":"done"}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    let remaining = "";
+    while (true) {
+      const next = await reader!.read();
+      if (next.done) break;
+      remaining += new TextDecoder().decode(next.value);
+    }
+    const finalEvent = JSON.parse(remaining.trim()) as StreamEvent;
+    expect(finalEvent).toMatchObject({ type: "result", status: 200 });
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+    expect(response.headers.get("cache-control")).toContain("no-transform");
   });
 
   it("forwards only a validated address from the configured ingress header", async () => {

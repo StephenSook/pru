@@ -22,6 +22,7 @@ test("runs the three preset routes and the consent lifecycle", async ({ page }) 
   await expect(page.getByText("Test consent active")).toBeVisible();
 
   await page.getByRole("button", { name: localPrompt }).click();
+  await expect(page.getByText("Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s")).toBeVisible();
   await expect(page.getByText("● LOCAL").first()).toBeVisible();
   await expect(page.getByLabel("Assistant result")).not.toContainText(/\b\d{3}-\d{2}-\d{4}\b/);
 
