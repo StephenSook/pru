@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    ActionRequest, GatewayError,
+    ActionRequest, GatewayError, NO_ACTIVE_CONSENT_MESSAGE, NO_ACTIVE_CONSENT_REASON,
     api::{
         ApiError, ApiState, DemoClient, StoredConsent, read_consents, read_demo_client,
         reject_potentially_issued_ssns,
@@ -133,7 +133,11 @@ pub async fn run_chat(
             Ok(action) => action,
             Err(error @ (GatewayError::Consent(_) | GatewayError::PolicyDenied(_))) => {
                 let step = denied_step(state, workspace, client_id, "model", None, &error)?;
-                let answer = step.policy_reason.clone();
+                let answer = if step.policy_reason == NO_ACTIVE_CONSENT_REASON {
+                    NO_ACTIVE_CONSENT_MESSAGE.to_owned()
+                } else {
+                    step.policy_reason.clone()
+                };
                 steps.push(step);
                 return Ok(ChatResponse {
                     turn_id: Uuid::new_v4(),

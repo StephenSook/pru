@@ -39,6 +39,9 @@ pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
 pub const LOCAL_MODEL_BUSY_MESSAGE: &str =
     "The public demo's local model is busy. Please wait for the current generation to finish.";
+pub const NO_ACTIVE_CONSENT_REASON: &str = "no_active_consent";
+pub const NO_ACTIVE_CONSENT_MESSAGE: &str =
+    "Pru has no active consent for this client. Mint a use consent before asking.";
 pub const TOKEN_FACTORY_NOT_CONFIGURED_REASON: &str = "token_factory_not_configured";
 pub const TOKEN_FACTORY_NOT_CONFIGURED_MESSAGE: &str =
     "Token Factory is disabled because this build has no NEBIUS_API_KEY.";
@@ -492,6 +495,22 @@ async fn execute_gateway_action(
     };
 
     let now = state.inner.clock.now();
+    if request.consent_token.trim().is_empty() {
+        append_ledger(
+            state,
+            now,
+            &request,
+            LedgerDecision {
+                action,
+                outcome: "deny",
+                route,
+                policy_reason: NO_ACTIVE_CONSENT_REASON,
+                model_id: model_for(state, action, route),
+                spans: &spans,
+            },
+        )?;
+        return Err(GatewayError::Consent(NO_ACTIVE_CONSENT_MESSAGE.to_owned()));
+    }
     let verification = {
         let revocations = state
             .inner

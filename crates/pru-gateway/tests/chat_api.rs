@@ -360,6 +360,11 @@ async fn missing_use_consent_denies_before_any_model_call() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["steps"][0]["decision"], "deny");
+    assert_eq!(body["steps"][0]["policy_reason"], "no_active_consent");
+    assert_eq!(
+        body["answer"],
+        "Pru has no active consent for this client. Mint a use consent before asking."
+    );
     assert!(harness.local_calls.lock().expect("local calls").is_empty());
     assert!(
         harness
