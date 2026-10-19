@@ -35,6 +35,7 @@ struct FakeHermesState {
     mcp_calls: Arc<Mutex<usize>>,
     received: Arc<Mutex<Vec<Value>>>,
     deleted: Arc<Mutex<Vec<String>>>,
+    delete_conflicts_remaining: Arc<Mutex<usize>>,
 }
 
 struct Harness {
@@ -246,6 +247,15 @@ async fn delete_fake_session(
     {
         return StatusCode::UNAUTHORIZED;
     }
+    let mut conflicts_remaining = state
+        .delete_conflicts_remaining
+        .lock()
+        .expect("delete conflict counter lock");
+    if *conflicts_remaining > 0 {
+        *conflicts_remaining -= 1;
+        return StatusCode::CONFLICT;
+    }
+    drop(conflicts_remaining);
     state
         .deleted
         .lock()
@@ -307,6 +317,7 @@ async fn harness() -> Harness {
         mcp_calls: Arc::new(Mutex::new(0)),
         received: Arc::new(Mutex::new(Vec::new())),
         deleted: Arc::new(Mutex::new(Vec::new())),
+        delete_conflicts_remaining: Arc::new(Mutex::new(0)),
     };
     let fake = Router::new()
         .route("/v1/chat/completions", post(fake_hermes_chat))
@@ -396,6 +407,40 @@ async fn fake_hermes_runs_model_tool_model_and_deletes_the_session() {
             .expect("deleted sessions")
             .as_slice(),
         [turn_id]
+    );
+}
+
+#[tokio::test]
+async fn retries_a_temporary_session_cleanup_conflict() {
+    let harness = harness().await;
+    *harness
+        .hermes
+        .delete_conflicts_remaining
+        .lock()
+        .expect("delete conflict counter lock") = 1;
+    mint_use(&harness).await;
+
+    let (status, body) = chat(&harness, "Summarize the selected TEST DATA client").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["answer"], "The TEST DATA client is Avery Morgan.");
+    let turn_id = body["turn_id"].as_str().expect("turn id");
+    assert_eq!(
+        harness
+            .hermes
+            .deleted
+            .lock()
+            .expect("deleted sessions")
+            .as_slice(),
+        [turn_id]
+    );
+    assert_eq!(
+        *harness
+            .hermes
+            .delete_conflicts_remaining
+            .lock()
+            .expect("delete conflict counter lock"),
+        0
     );
 }
 

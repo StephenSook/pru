@@ -24,6 +24,8 @@ const DEFAULT_PURPOSE: &str = "prepare this synthetic tax client's return";
 pub const HERMES_AGENT_VERSION: &str = "0.22.2";
 const HERMES_AGENT_NAME: &str = "Hermes Agent";
 const HERMES_REQUEST_TIMEOUT_SECS: u64 = 90;
+const HERMES_SESSION_DELETE_ATTEMPTS: usize = 5;
+const HERMES_SESSION_DELETE_RETRY_MS: u64 = 100;
 
 #[derive(Clone, Debug)]
 pub enum AgentBackend {
@@ -432,25 +434,34 @@ async fn delete_hermes_session(
     config: &HermesAgentConfig,
     turn_id: Uuid,
 ) -> Result<(), ApiError> {
-    let response = state
-        .agent_client()
-        .delete(format!(
-            "{}/api/sessions/{turn_id}",
-            config.base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(&config.api_key)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|error| ApiError::AgentTransport(error.to_string()))?;
-    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
-        Ok(())
-    } else {
-        Err(ApiError::AgentTransport(format!(
-            "Hermes session deletion returned HTTP {}",
-            response.status()
-        )))
+    for attempt in 0..HERMES_SESSION_DELETE_ATTEMPTS {
+        let response = state
+            .agent_client()
+            .delete(format!(
+                "{}/api/sessions/{turn_id}",
+                config.base_url.trim_end_matches('/')
+            ))
+            .bearer_auth(&config.api_key)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|error| ApiError::AgentTransport(error.to_string()))?;
+        let status = response.status();
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if status == reqwest::StatusCode::CONFLICT && attempt + 1 < HERMES_SESSION_DELETE_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(
+                HERMES_SESSION_DELETE_RETRY_MS * (attempt as u64 + 1),
+            ))
+            .await;
+            continue;
+        }
+        return Err(ApiError::AgentTransport(format!(
+            "Hermes session deletion returned HTTP {status}"
+        )));
     }
+    unreachable!("Hermes session deletion retry loop always returns")
 }
 
 fn hermes_steps(
