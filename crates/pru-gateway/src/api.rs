@@ -399,6 +399,7 @@ async fn mint_consent(
     with_consents(&state, &workspace, &client, |consents| {
         consents.push(stored);
     })?;
+    workspace.mark_touched()?;
     Ok((StatusCode::CREATED, Json(view)))
 }
 

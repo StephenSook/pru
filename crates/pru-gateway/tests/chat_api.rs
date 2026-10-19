@@ -296,6 +296,7 @@ async fn explicit_ssn_turn_stays_local_and_redacts_the_http_answer() {
             .is_empty()
     );
     assert!(!text.contains("102-00-1001"));
+    assert!(harness.root.join(WORKSPACE).join(".touched").is_file());
 }
 
 #[tokio::test]

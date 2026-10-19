@@ -158,6 +158,7 @@ async fn consent_endpoints_hash_pin_list_redacted_fields_and_revoke() {
     assert_eq!(created["revoked"], false);
     assert!(created.get("token").is_none());
     assert!(created.get("pin_hash").is_none());
+    assert!(harness.root.join(WORKSPACE_A).join(".touched").is_file());
 
     let stored = std::fs::read_to_string(
         harness

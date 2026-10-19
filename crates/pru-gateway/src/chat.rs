@@ -80,6 +80,7 @@ pub async fn run_chat(
             "message must not be empty".to_owned(),
         ));
     }
+    workspace.mark_touched()?;
 
     let client = read_demo_client(state, workspace, client_id)?;
     let consents = read_consents(state, workspace, client_id)?;

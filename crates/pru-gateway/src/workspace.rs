@@ -12,9 +12,11 @@ use uuid::Uuid;
 
 pub const WORKSPACE_HEADER: &str = "x-pru-workspace-id";
 pub const WORKSPACE_IDLE_TTL_SECS: u64 = 3_600;
+pub const UNTOUCHED_WORKSPACE_IDLE_TTL_SECS: u64 = 600;
 pub const WORKSPACE_CLEANUP_INTERVAL_SECS: u64 = 60;
 pub const MAX_CONCURRENT_WORKSPACES: usize = 200;
 const LAST_ACCESS_FILE: &str = ".last_access";
+const TOUCHED_FILE: &str = ".touched";
 
 #[derive(Clone)]
 pub struct WorkspaceManager {
@@ -24,6 +26,7 @@ pub struct WorkspaceManager {
 struct WorkspaceManagerInner {
     root: PathBuf,
     idle_ttl: Duration,
+    untouched_idle_ttl: Duration,
     maximum: usize,
     entries: Mutex<WorkspaceEntries>,
 }
@@ -61,6 +64,10 @@ impl WorkspaceContext {
     pub fn root(&self) -> &std::path::Path {
         &self.root
     }
+
+    pub fn mark_touched(&self) -> Result<(), WorkspaceError> {
+        fs::write(self.root.join(TOUCHED_FILE), []).map_err(|_| WorkspaceError::Storage)
+    }
 }
 
 impl WorkspaceManager {
@@ -69,15 +76,22 @@ impl WorkspaceManager {
         Self::with_limits(
             root,
             Duration::from_secs(WORKSPACE_IDLE_TTL_SECS),
+            Duration::from_secs(UNTOUCHED_WORKSPACE_IDLE_TTL_SECS),
             MAX_CONCURRENT_WORKSPACES,
         )
     }
 
-    fn with_limits(root: PathBuf, idle_ttl: Duration, maximum: usize) -> Self {
+    fn with_limits(
+        root: PathBuf,
+        idle_ttl: Duration,
+        untouched_idle_ttl: Duration,
+        maximum: usize,
+    ) -> Self {
         Self {
             inner: Arc::new(WorkspaceManagerInner {
                 root,
                 idle_ttl,
+                untouched_idle_ttl,
                 maximum,
                 entries: Mutex::new(WorkspaceEntries::default()),
             }),
@@ -91,31 +105,34 @@ impl WorkspaceManager {
     ) -> Result<(WorkspaceContext, bool), WorkspaceError> {
         let id = parse_workspace_id(raw_id)?;
         self.cleanup_expired().await;
-        let (gate, is_new) = {
-            let mut entries = self
-                .inner
-                .entries
-                .lock()
-                .map_err(|_| WorkspaceError::State)?;
-            if entries.deleting.contains_key(&id) {
-                return Err(WorkspaceError::Deleting);
-            }
-            if let Some(entry) = entries.active.get_mut(&id) {
-                entry.last_access = Instant::now();
-                (Arc::clone(&entry.gate), false)
-            } else {
-                if entries.active.len() + entries.deleting.len() >= self.inner.maximum {
-                    return Err(WorkspaceError::Capacity);
+        let (gate, is_new) = loop {
+            {
+                let mut entries = self
+                    .inner
+                    .entries
+                    .lock()
+                    .map_err(|_| WorkspaceError::State)?;
+                if entries.deleting.contains_key(&id) {
+                    return Err(WorkspaceError::Deleting);
                 }
-                let gate = Arc::new(RwLock::new(()));
-                entries.active.insert(
-                    id,
-                    WorkspaceEntry {
-                        last_access: Instant::now(),
-                        gate: Arc::clone(&gate),
-                    },
-                );
-                (gate, true)
+                if let Some(entry) = entries.active.get_mut(&id) {
+                    entry.last_access = Instant::now();
+                    break (Arc::clone(&entry.gate), false);
+                }
+                if entries.active.len() + entries.deleting.len() < self.inner.maximum {
+                    let gate = Arc::new(RwLock::new(()));
+                    entries.active.insert(
+                        id,
+                        WorkspaceEntry {
+                            last_access: Instant::now(),
+                            gate: Arc::clone(&gate),
+                        },
+                    );
+                    break (gate, true);
+                }
+            }
+            if !self.evict_lru_untouched().await? {
+                return Err(WorkspaceError::Capacity);
             }
         };
         let lease = if exclusive || is_new {
@@ -144,6 +161,66 @@ impl WorkspaceManager {
         ))
     }
 
+    async fn evict_lru_untouched(&self) -> Result<bool, WorkspaceError> {
+        let selected = {
+            let mut entries = self
+                .inner
+                .entries
+                .lock()
+                .map_err(|_| WorkspaceError::State)?;
+            let mut candidates = entries
+                .active
+                .iter()
+                .filter_map(|(id, entry)| {
+                    let root = self.inner.root.join(id.to_string());
+                    (!workspace_is_touched(&root)).then_some((*id, entry.last_access))
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|(_, last_access)| *last_access);
+
+            let mut selected = None;
+            for (id, _) in candidates {
+                let Some(gate) = entries.active.get(&id).map(|entry| Arc::clone(&entry.gate))
+                else {
+                    continue;
+                };
+                let Ok(exclusive) = gate.try_write_owned() else {
+                    continue;
+                };
+                let entry = entries
+                    .active
+                    .remove(&id)
+                    .expect("selected workspace remains active");
+                entries.deleting.insert(id, Arc::clone(&entry.gate));
+                selected = Some((id, entry, exclusive));
+                break;
+            }
+            selected
+        };
+
+        let Some((id, entry, _exclusive)) = selected else {
+            return Ok(false);
+        };
+        let path = self.inner.root.join(id.to_string());
+        let deletion = fs::remove_dir_all(&path);
+        let deleted = match &deletion {
+            Ok(()) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        let mut entries = self
+            .inner
+            .entries
+            .lock()
+            .map_err(|_| WorkspaceError::State)?;
+        entries.deleting.remove(&id);
+        if deleted {
+            Ok(true)
+        } else {
+            entries.active.insert(id, entry);
+            Err(WorkspaceError::Storage)
+        }
+    }
+
     pub async fn cleanup_expired(&self) {
         let candidates = {
             let Ok(mut entries) = self.inner.entries.lock() else {
@@ -155,7 +232,13 @@ impl WorkspaceManager {
                 .active
                 .iter()
                 .filter_map(|(id, entry)| {
-                    (now.duration_since(entry.last_access) >= self.inner.idle_ttl).then_some(*id)
+                    let root = self.inner.root.join(id.to_string());
+                    let idle_ttl = if workspace_is_touched(&root) {
+                        self.inner.idle_ttl
+                    } else {
+                        self.inner.untouched_idle_ttl
+                    };
+                    (now.duration_since(entry.last_access) >= idle_ttl).then_some(*id)
                 })
                 .collect::<Vec<_>>();
             for id in &expired {
@@ -209,7 +292,7 @@ impl WorkspaceManager {
             let Ok(id) = parse_workspace_id(&raw_id) else {
                 continue;
             };
-            if !workspace_is_expired(&path, self.inner.idle_ttl) {
+            if !workspace_is_expired(&path, self.inner.idle_ttl, self.inner.untouched_idle_ttl) {
                 continue;
             }
             let gate = {
@@ -265,11 +348,24 @@ fn touch_workspace(root: &std::path::Path) -> std::io::Result<()> {
     fs::write(root.join(LAST_ACCESS_FILE), [])
 }
 
-fn workspace_is_expired(root: &std::path::Path, idle_ttl: Duration) -> bool {
+fn workspace_is_touched(root: &std::path::Path) -> bool {
+    root.join(TOUCHED_FILE).is_file()
+}
+
+fn workspace_is_expired(
+    root: &std::path::Path,
+    idle_ttl: Duration,
+    untouched_idle_ttl: Duration,
+) -> bool {
     let marker = root.join(LAST_ACCESS_FILE);
     let metadata = fs::metadata(&marker).or_else(|_| fs::metadata(root));
     let Ok(modified) = metadata.and_then(|metadata| metadata.modified()) else {
         return false;
+    };
+    let idle_ttl = if workspace_is_touched(root) {
+        idle_ttl
+    } else {
+        untouched_idle_ttl
     };
     modified.elapsed().unwrap_or_default() >= idle_ttl
 }
@@ -311,10 +407,18 @@ mod tests {
     #[tokio::test]
     async fn refuses_a_workspace_beyond_the_named_capacity() {
         let temp = TempDir::new().expect("temp directory");
-        let manager =
-            WorkspaceManager::with_limits(temp.path().to_path_buf(), Duration::from_secs(3_600), 2);
-        let (_a, _) = manager.acquire(A, false).await.expect("workspace A");
-        let (_b, _) = manager.acquire(B, false).await.expect("workspace B");
+        let manager = WorkspaceManager::with_limits(
+            temp.path().to_path_buf(),
+            Duration::from_secs(3_600),
+            Duration::from_secs(600),
+            2,
+        );
+        let (a, _) = manager.acquire(A, false).await.expect("workspace A");
+        a.mark_touched().expect("touch workspace A");
+        drop(a);
+        let (b, _) = manager.acquire(B, false).await.expect("workspace B");
+        b.mark_touched().expect("touch workspace B");
+        drop(b);
         let error = manager
             .acquire(C, false)
             .await
@@ -324,10 +428,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn evicts_the_least_recently_used_untouched_workspace_at_capacity() {
+        let temp = TempDir::new().expect("temp directory");
+        let manager = WorkspaceManager::with_limits(
+            temp.path().to_path_buf(),
+            Duration::from_secs(3_600),
+            Duration::from_secs(600),
+            2,
+        );
+        let (a, _) = manager.acquire(A, false).await.expect("workspace A");
+        drop(a);
+        let (b, _) = manager.acquire(B, false).await.expect("workspace B");
+        drop(b);
+        {
+            let mut entries = manager.inner.entries.lock().expect("workspace entries");
+            entries
+                .active
+                .get_mut(&Uuid::parse_str(A).unwrap())
+                .unwrap()
+                .last_access = Instant::now() - Duration::from_secs(2);
+        }
+
+        let (c, is_new) = manager.acquire(C, false).await.expect("workspace C");
+
+        assert!(is_new);
+        assert!(!temp.path().join(A).exists());
+        assert!(temp.path().join(B).exists());
+        assert!(c.root().exists());
+    }
+
+    #[tokio::test]
+    async fn touched_workspace_is_never_evicted_early() {
+        let temp = TempDir::new().expect("temp directory");
+        let manager = WorkspaceManager::with_limits(
+            temp.path().to_path_buf(),
+            Duration::from_secs(3_600),
+            Duration::from_secs(600),
+            2,
+        );
+        let (a, _) = manager.acquire(A, false).await.expect("workspace A");
+        a.mark_touched().expect("touch workspace A");
+        drop(a);
+        let (b, _) = manager.acquire(B, false).await.expect("workspace B");
+        drop(b);
+        {
+            let mut entries = manager.inner.entries.lock().expect("workspace entries");
+            entries
+                .active
+                .get_mut(&Uuid::parse_str(A).unwrap())
+                .unwrap()
+                .last_access = Instant::now() - Duration::from_secs(2);
+        }
+
+        let (c, _) = manager.acquire(C, false).await.expect("workspace C");
+
+        assert!(temp.path().join(A).exists());
+        assert!(!temp.path().join(B).exists());
+        assert!(c.root().exists());
+    }
+
+    #[tokio::test]
     async fn cleanup_deletes_an_idle_workspace_directory() {
         let temp = TempDir::new().expect("temp directory");
         let manager = WorkspaceManager::with_limits(
             temp.path().to_path_buf(),
+            Duration::from_secs(3_600),
             Duration::from_secs(1),
             MAX_CONCURRENT_WORKSPACES,
         );
@@ -357,6 +522,7 @@ mod tests {
         let manager = WorkspaceManager::with_limits(
             temp.path().to_path_buf(),
             Duration::ZERO,
+            Duration::ZERO,
             MAX_CONCURRENT_WORKSPACES,
         );
 
@@ -380,6 +546,7 @@ mod tests {
     #[test]
     fn public_workspace_constants_are_fixed() {
         assert_eq!(WORKSPACE_IDLE_TTL_SECS, 3_600);
+        assert_eq!(UNTOUCHED_WORKSPACE_IDLE_TTL_SECS, 600);
         assert_eq!(WORKSPACE_CLEANUP_INTERVAL_SECS, 60);
         assert_eq!(MAX_CONCURRENT_WORKSPACES, 200);
     }
