@@ -39,7 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_api_key: env::var("PRU_LOCAL_LLM_API_KEY").ok(),
         token_factory_base_url: env::var("PRU_TOKEN_FACTORY_URL")
             .unwrap_or_else(|_| "https://api.tokenfactory.nebius.com/v1".to_owned()),
-        nebius_api_key: env::var("NEBIUS_API_KEY").ok(),
+        nebius_api_key: env::var("NEBIUS_API_KEY")
+            .ok()
+            .filter(|key| !key.trim().is_empty()),
         ledger_path: PathBuf::from(
             env::var("PRU_EGRESS_LEDGER").unwrap_or_else(|_| "data/egress.jsonl".to_owned()),
         ),
