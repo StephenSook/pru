@@ -97,6 +97,8 @@ async fn chat_completions(State(state): State<ApiState>, request: Request) -> Re
             turn_id,
             actor: "hermes".to_owned(),
             step: "model".to_owned(),
+            tool: None,
+            redacted_source: None,
         }),
     };
     match state.gateway().execute_agent_model(action).await {

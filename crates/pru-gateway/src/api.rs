@@ -29,6 +29,8 @@ use crate::{GatewayError, GatewayState, validate_client_id};
 pub const REAL_SSN_REFUSAL_MESSAGE: &str =
     "This public demo accepts test data only. Do not enter real taxpayer data. 26 U.S.C. 7216.";
 pub const MAX_REQUEST_BODY_BYTES: usize = 16_384;
+pub const MAX_AGENT_NOTES: usize = 20;
+pub const MAX_AGENT_NOTE_CHARS: usize = 280;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -98,11 +100,25 @@ impl ApiState {
             })?;
             write_json(&directory.join("client.json"), &client)?;
             write_json(
+                &directory.join("w2.json"),
+                &json!({
+                    "document": "w2",
+                    "test_data": true,
+                    "name": client.name,
+                    "email": client.email,
+                    "filing_status": client.filing_status,
+                    "w2": client.w2_line,
+                    "ssn": client.ssn
+                }),
+            )?;
+            write_json(
                 &directory.join("consents.json"),
                 &Vec::<StoredConsent>::new(),
             )?;
             fs::write(directory.join("ledger.jsonl"), [])
                 .map_err(|error| ApiError::Storage(format!("clear ledger: {error}")))?;
+            fs::write(directory.join("notes.jsonl"), [])
+                .map_err(|error| ApiError::Storage(format!("clear notes: {error}")))?;
         }
         Ok(demo_clients().iter().map(DemoClientView::from).collect())
     }
@@ -123,6 +139,97 @@ impl ApiState {
             Err(ApiError::NotFound)
         }
     }
+
+    pub(crate) fn read_w2_document(
+        &self,
+        workspace: &WorkspaceContext,
+        client: &str,
+    ) -> Result<Value, ApiError> {
+        self.ensure_demo_client(client)?;
+        let path = client_directory(workspace.root(), client)?.join("w2.json");
+        let body = fs::read(&path)
+            .map_err(|error| ApiError::Storage(format!("read {}: {error}", path.display())))?;
+        serde_json::from_slice(&body)
+            .map_err(|error| ApiError::Storage(format!("decode {}: {error}", path.display())))
+    }
+
+    pub(crate) fn append_agent_note(
+        &self,
+        workspace: &WorkspaceContext,
+        client: &str,
+        text: String,
+        ledger_entry_id: Uuid,
+    ) -> Result<AgentNote, ApiError> {
+        self.ensure_demo_client(client)?;
+        if text.trim().is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "note text must not be empty".to_owned(),
+            ));
+        }
+        if text.chars().count() > MAX_AGENT_NOTE_CHARS {
+            return Err(ApiError::InvalidRequest(format!(
+                "note exceeds {MAX_AGENT_NOTE_CHARS} characters"
+            )));
+        }
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| ApiError::Storage("note storage lock poisoned".to_owned()))?;
+        let notes = read_agent_notes_unlocked(workspace.root(), client)?;
+        if notes.len() >= MAX_AGENT_NOTES {
+            return Err(ApiError::InvalidRequest(format!(
+                "client already has the maximum {MAX_AGENT_NOTES} notes"
+            )));
+        }
+        let note = AgentNote {
+            id: Uuid::new_v4(),
+            text,
+            created_at: Utc::now(),
+            ledger_entry_id,
+        };
+        let path = client_directory(workspace.root(), client)?.join("notes.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| ApiError::Storage(format!("open {}: {error}", path.display())))?;
+        serde_json::to_writer(&mut file, &note)
+            .map_err(|error| ApiError::Storage(format!("encode {}: {error}", path.display())))?;
+        use std::io::Write as _;
+        file.write_all(b"\n")
+            .and_then(|()| file.flush())
+            .map_err(|error| ApiError::Storage(format!("append {}: {error}", path.display())))?;
+        workspace.mark_touched()?;
+        Ok(note)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct AgentNote {
+    pub(crate) id: Uuid,
+    pub(crate) text: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) ledger_entry_id: Uuid,
+}
+
+fn read_agent_notes_unlocked(root: &Path, client: &str) -> Result<Vec<AgentNote>, ApiError> {
+    let path = client_directory(root, client)?.join("notes.jsonl");
+    let body = match fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(ApiError::Storage(format!(
+                "read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    body.lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .map_err(|error| ApiError::Storage(format!("decode {}: {error}", path.display())))
+        })
+        .collect()
 }
 
 pub fn api_router(state: ApiState) -> Router {

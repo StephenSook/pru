@@ -212,6 +212,37 @@ impl AgentTurnRegistry {
         })
     }
 
+    pub fn consume_pending_tool_call(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<ActiveTurnSnapshot, AgentTurnError> {
+        let arguments = canonicalize_json(arguments);
+        let canonical_arguments = serde_json::to_string(&arguments).map_err(|error| {
+            AgentTurnError::Protocol(format!("encode tool call arguments: {error}"))
+        })?;
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| AgentTurnError::State)?;
+        let turn = active.as_mut().ok_or(AgentTurnError::Missing)?;
+        if Instant::now() >= turn.deadline {
+            return Err(AgentTurnError::Expired);
+        }
+        let position = turn
+            .pending_tool_calls
+            .iter()
+            .position(|call| call.name == name && call.canonical_arguments == canonical_arguments)
+            .ok_or(AgentTurnError::UnmatchedToolCall)?;
+        if turn.tool_calls >= MAX_AGENT_TOOL_CALLS {
+            return Err(AgentTurnError::ToolCallLimit);
+        }
+        turn.pending_tool_calls.remove(position);
+        turn.tool_calls += 1;
+        Ok(snapshot(turn))
+    }
+
     fn with_active<T>(
         &self,
         expected: Uuid,
@@ -331,6 +362,8 @@ pub enum AgentTurnError {
     ModelCallLimit,
     #[error("the Hermes turn exceeded {MAX_AGENT_TOOL_CALLS} tool calls")]
     ToolCallLimit,
+    #[error("the tool call does not match a pending request from the latest model response")]
+    UnmatchedToolCall,
     #[error("agent turn state is unavailable")]
     State,
     #[error("invalid model response: {0}")]
@@ -343,7 +376,9 @@ impl IntoResponse for AgentTurnError {
             Self::Busy | Self::ModelCallLimit | Self::ToolCallLimit => {
                 StatusCode::TOO_MANY_REQUESTS
             }
-            Self::Missing | Self::Mismatch | Self::Expired => StatusCode::CONFLICT,
+            Self::Missing | Self::Mismatch | Self::Expired | Self::UnmatchedToolCall => {
+                StatusCode::CONFLICT
+            }
             Self::State | Self::Protocol(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error": self.to_string()}))).into_response()
@@ -355,6 +390,8 @@ pub(crate) struct LedgerContext {
     pub turn_id: Uuid,
     pub actor: String,
     pub step: String,
+    pub tool: Option<String>,
+    pub redacted_source: Option<Value>,
 }
 
 #[cfg(test)]

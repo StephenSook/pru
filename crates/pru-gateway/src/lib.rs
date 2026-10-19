@@ -32,6 +32,7 @@ pub mod agent_api;
 pub mod api;
 pub mod chat;
 pub mod limits;
+pub mod mcp;
 pub mod workspace;
 
 use limits::{LimitError, TokenBudget, TokenReservation};
@@ -132,6 +133,7 @@ enum GatewayAction {
     LlmComplete,
     ChatComplete,
     AgentModel,
+    AgentTool,
 }
 
 impl GatewayAction {
@@ -151,6 +153,7 @@ impl GatewayAction {
             Self::LlmComplete => "llm_complete",
             Self::ChatComplete => "chat_model",
             Self::AgentModel => "agent_model",
+            Self::AgentTool => "agent_tool",
         }
     }
 }
@@ -226,6 +229,10 @@ struct LedgerEntry {
     output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latency_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    redacted_spans: Option<usize>,
 }
 
 struct LedgerDecision<'a> {
@@ -310,9 +317,16 @@ impl EgressLedger {
         request: &ActionRequest,
         decision: LedgerDecision<'_>,
     ) -> Result<Uuid, GatewayError> {
+        let redacted = request
+            .ledger_context
+            .as_ref()
+            .and_then(|context| context.redacted_source.as_ref())
+            .map(scan_value)
+            .unwrap_or_default();
         let span_hashes = decision
             .spans
             .iter()
+            .chain(redacted.iter())
             .map(|span| {
                 blake3::keyed_hash(&self.hash_key, span.matched.as_bytes())
                     .to_hex()
@@ -348,6 +362,15 @@ impl EgressLedger {
             input_tokens: None,
             output_tokens: None,
             latency_ms: None,
+            tool: request
+                .ledger_context
+                .as_ref()
+                .and_then(|context| context.tool.clone()),
+            redacted_spans: request
+                .ledger_context
+                .as_ref()
+                .and_then(|context| context.redacted_source.as_ref())
+                .map(|_| redacted.len()),
         };
         self.write(request, &entry)?;
         Ok(id)
@@ -388,6 +411,11 @@ impl EgressLedger {
             input_tokens: completion.input_tokens,
             output_tokens: completion.output_tokens,
             latency_ms: Some(completion.latency_ms),
+            tool: request
+                .ledger_context
+                .as_ref()
+                .and_then(|context| context.tool.clone()),
+            redacted_spans: None,
         };
         self.write(request, &entry)?;
         Ok(id)
@@ -545,6 +573,13 @@ impl GatewayState {
     ) -> Result<ActionResponse, GatewayError> {
         execute_gateway_action(self, GatewayAction::AgentModel, request).await
     }
+
+    pub(crate) async fn execute_agent_tool(
+        &self,
+        request: ActionRequest,
+    ) -> Result<ActionResponse, GatewayError> {
+        execute_gateway_action(self, GatewayAction::AgentTool, request).await
+    }
 }
 
 pub fn router(state: GatewayState) -> Router {
@@ -575,6 +610,12 @@ async fn execute_gateway_action(
             EgressAction::Use,
             "token_factory",
             TOKEN_FACTORY_RECIPIENT.to_owned(),
+            "dynamic".to_owned(),
+        ),
+        GatewayAction::AgentTool => (
+            EgressAction::Use,
+            "dynamic",
+            "Hermes Agent context".to_owned(),
             "dynamic".to_owned(),
         ),
         GatewayAction::LlmComplete | GatewayAction::ChatComplete if contains_ssn => (
@@ -608,14 +649,15 @@ async fn execute_gateway_action(
 
     let now = state.inner.clock.now();
     if request.consent_token.trim().is_empty() {
-        let (reason, message) = if matches!(action, GatewayAction::AgentModel) {
-            (
-                MATCHING_CONSENT_REQUIRED_REASON,
-                MATCHING_CONSENT_REQUIRED_MESSAGE,
-            )
-        } else {
-            (NO_ACTIVE_CONSENT_REASON, NO_ACTIVE_CONSENT_MESSAGE)
-        };
+        let (reason, message) =
+            if matches!(action, GatewayAction::AgentModel | GatewayAction::AgentTool) {
+                (
+                    MATCHING_CONSENT_REQUIRED_REASON,
+                    MATCHING_CONSENT_REQUIRED_MESSAGE,
+                )
+            } else {
+                (NO_ACTIVE_CONSENT_REASON, NO_ACTIVE_CONSENT_MESSAGE)
+            };
         append_ledger(
             state,
             now,
@@ -809,6 +851,7 @@ async fn execute_gateway_action(
                 "sent": false
             })),
         ),
+        GatewayAction::AgentTool => (false, Some(request.arguments)),
         GatewayAction::LlmComplete | GatewayAction::ChatComplete | GatewayAction::AgentModel => {
             let call = call_llm(
                 state,
@@ -926,7 +969,7 @@ fn model_for<'a>(state: &'a GatewayState, action: GatewayAction, route: &str) ->
         GatewayAction::LlmComplete | GatewayAction::ChatComplete | GatewayAction::AgentModel => {
             Some(TOKEN_FACTORY_MODEL)
         }
-        GatewayAction::SendEmail | GatewayAction::CreateEvent => None,
+        GatewayAction::SendEmail | GatewayAction::CreateEvent | GatewayAction::AgentTool => None,
     }
 }
 
@@ -1161,6 +1204,8 @@ mod ledger_context_tests {
                 turn_id,
                 actor: "hermes".to_owned(),
                 step: "model".to_owned(),
+                tool: None,
+                redacted_source: None,
             }),
         };
         ledger
