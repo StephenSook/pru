@@ -10,6 +10,9 @@ if [ -z "${PRU_LEDGER_HASH_KEY:-}" ]; then
   export PRU_LEDGER_HASH_KEY
 fi
 
+PRU_LOCAL_THREADS="${PRU_LOCAL_THREADS:-$(nproc)}"
+export PRU_LOCAL_THREADS
+
 cleanup() {
   status=$?
   trap - EXIT INT TERM
@@ -30,8 +33,8 @@ env -u NEBIUS_API_KEY /opt/llama/llama-server \
   --port 8081 \
   --ctx-size 8192 \
   --parallel 1 \
-  --threads "${PRU_LOCAL_THREADS:-8}" \
-  --threads-batch "${PRU_LOCAL_THREADS:-8}" \
+  --threads "${PRU_LOCAL_THREADS}" \
+  --threads-batch "${PRU_LOCAL_THREADS}" \
   --n-gpu-layers 0 \
   --jinja \
   --reasoning off \
