@@ -40,6 +40,26 @@ struct WorkspaceEntries {
 struct WorkspaceEntry {
     last_access: Instant,
     gate: Arc<RwLock<()>>,
+    // Requests that found this entry but do not hold its lease yet. Changed only under the
+    // registry mutex, so eviction and cleanup, which also hold it, never take such an entry.
+    pending: usize,
+}
+
+/// Counts a request as pending on a workspace until it holds the lease, including when the
+/// request is cancelled while waiting.
+struct PendingLease {
+    inner: Arc<WorkspaceManagerInner>,
+    id: Uuid,
+}
+
+impl Drop for PendingLease {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.inner.entries.lock()
+            && let Some(entry) = entries.active.get_mut(&self.id)
+        {
+            entry.pending = entry.pending.saturating_sub(1);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -117,6 +137,7 @@ impl WorkspaceManager {
                 }
                 if let Some(entry) = entries.active.get_mut(&id) {
                     entry.last_access = Instant::now();
+                    entry.pending += 1;
                     break (Arc::clone(&entry.gate), false);
                 }
                 if entries.active.len() + entries.deleting.len() < self.inner.maximum {
@@ -126,6 +147,7 @@ impl WorkspaceManager {
                         WorkspaceEntry {
                             last_access: Instant::now(),
                             gate: Arc::clone(&gate),
+                            pending: 1,
                         },
                     );
                     break (gate, true);
@@ -134,6 +156,10 @@ impl WorkspaceManager {
             if !self.evict_lru_untouched().await? {
                 return Err(WorkspaceError::Capacity);
             }
+        };
+        let pending = PendingLease {
+            inner: Arc::clone(&self.inner),
+            id,
         };
         let lease = if exclusive || is_new {
             WorkspaceLease::Write {
@@ -144,6 +170,8 @@ impl WorkspaceManager {
                 _guard: gate.read_owned().await,
             }
         };
+        // The lease now holds the gate, so eviction's try_write fails from here on.
+        drop(pending);
         let root = self.inner.root.join(id.to_string());
         if touch_workspace(&root).is_err() {
             if is_new && let Ok(mut entries) = self.inner.entries.lock() {
@@ -173,7 +201,8 @@ impl WorkspaceManager {
                 .iter()
                 .filter_map(|(id, entry)| {
                     let root = self.inner.root.join(id.to_string());
-                    (!workspace_is_touched(&root)).then_some((*id, entry.last_access))
+                    (entry.pending == 0 && !workspace_is_touched(&root))
+                        .then_some((*id, entry.last_access))
                 })
                 .collect::<Vec<_>>();
             candidates.sort_by_key(|(_, last_access)| *last_access);
@@ -187,6 +216,10 @@ impl WorkspaceManager {
                 let Ok(exclusive) = gate.try_write_owned() else {
                     continue;
                 };
+                // A request that held the lease during the scan may have touched it and left.
+                if workspace_is_touched(&self.inner.root.join(id.to_string())) {
+                    continue;
+                }
                 let entry = entries
                     .active
                     .remove(&id)
@@ -238,7 +271,8 @@ impl WorkspaceManager {
                     } else {
                         self.inner.untouched_idle_ttl
                     };
-                    (now.duration_since(entry.last_access) >= idle_ttl).then_some(*id)
+                    (entry.pending == 0 && now.duration_since(entry.last_access) >= idle_ttl)
+                        .then_some(*id)
                 })
                 .collect::<Vec<_>>();
             for id in &expired {
@@ -485,6 +519,53 @@ mod tests {
         assert!(temp.path().join(A).exists());
         assert!(!temp.path().join(B).exists());
         assert!(c.root().exists());
+    }
+
+    // A request that has found its workspace but not yet taken the lease leaves the gate free.
+    // Eviction must not take that workspace in the gap.
+    #[tokio::test]
+    async fn a_workspace_waiting_for_its_lease_is_never_evicted() {
+        let temp = TempDir::new().expect("temp directory");
+        let manager = WorkspaceManager::with_limits(
+            temp.path().to_path_buf(),
+            Duration::from_secs(3_600),
+            Duration::from_secs(600),
+            2,
+        );
+        let (a, _) = manager.acquire(A, false).await.expect("workspace A");
+        drop(a);
+        let (b, _) = manager.acquire(B, false).await.expect("workspace B");
+        drop(b);
+        {
+            let mut entries = manager.inner.entries.lock().expect("workspace entries");
+            let a = entries
+                .active
+                .get_mut(&Uuid::parse_str(A).unwrap())
+                .unwrap();
+            a.last_access = Instant::now() - Duration::from_secs(2);
+            a.pending = 1;
+        }
+
+        let (c, _) = manager.acquire(C, false).await.expect("workspace C");
+
+        assert!(temp.path().join(A).exists());
+        assert!(!temp.path().join(B).exists());
+        assert!(c.root().exists());
+    }
+
+    #[tokio::test]
+    async fn the_pending_count_returns_to_zero_once_the_lease_is_held() {
+        let temp = TempDir::new().expect("temp directory");
+        let manager = WorkspaceManager::new(temp.path().to_path_buf());
+        // A new workspace takes the write lease, so release it before reading again.
+        let (a, _) = manager.acquire(A, false).await.expect("workspace A");
+        drop(a);
+        let (first, _) = manager.acquire(A, false).await.expect("first reader");
+        let (second, _) = manager.acquire(A, false).await.expect("second reader");
+        let entries = manager.inner.entries.lock().expect("workspace entries");
+        assert_eq!(entries.active[&Uuid::parse_str(A).unwrap()].pending, 0);
+        drop(entries);
+        drop((first, second));
     }
 
     #[tokio::test]
