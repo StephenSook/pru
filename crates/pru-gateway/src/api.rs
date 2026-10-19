@@ -202,6 +202,19 @@ impl ApiState {
         workspace.mark_touched()?;
         Ok(note)
     }
+
+    pub(crate) fn read_agent_notes(
+        &self,
+        workspace: &WorkspaceContext,
+        client: &str,
+    ) -> Result<Vec<AgentNote>, ApiError> {
+        self.ensure_demo_client(client)?;
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| ApiError::Storage("note storage lock poisoned".to_owned()))?;
+        read_agent_notes_unlocked(workspace.root(), client)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -248,6 +261,7 @@ pub fn api_router(state: ApiState) -> Router {
             post(revoke_consent),
         )
         .route("/v1/clients/{client}/ledger", get(get_ledger))
+        .route("/v1/clients/{client}/notes", get(get_notes))
         .route("/v1/clients/{client}/chat", post(chat))
         .layer(middleware::from_fn_with_state(
             workspace_state,
@@ -574,6 +588,14 @@ async fn get_ledger(
             .gateway
             .ledger_entries_in_workspace(&workspace.id(), &client)?,
     ))
+}
+
+async fn get_notes(
+    State(state): State<ApiState>,
+    Extension(workspace): Extension<WorkspaceContext>,
+    AxumPath(client): AxumPath<String>,
+) -> Result<Json<Vec<AgentNote>>, ApiError> {
+    Ok(Json(state.read_agent_notes(&workspace, &client)?))
 }
 
 fn client_directory(root: &Path, client: &str) -> Result<PathBuf, ApiError> {

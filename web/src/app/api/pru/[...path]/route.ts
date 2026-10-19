@@ -15,7 +15,7 @@ const CLIENT = "[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}";
 const ID = "[0-9a-fA-F-]{36}";
 const ALLOWED = [
   /^v1\/demo\/(clients|reset)$/,
-  new RegExp(`^v1/clients/${CLIENT}/(chat|ledger|consents)$`),
+  new RegExp(`^v1/clients/${CLIENT}/(chat|ledger|notes|consents)$`),
   new RegExp(`^v1/clients/${CLIENT}/consents/${ID}/revoke$`),
 ];
 

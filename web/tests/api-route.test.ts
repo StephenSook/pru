@@ -69,6 +69,26 @@ describe("server-side gateway route", () => {
     expect(gateway).not.toHaveBeenCalled();
   });
 
+  it("forwards the per-client notes route", async () => {
+    const gateway = vi.fn().mockResolvedValue(new Response(
+      '[{"id":"11111111-1111-4111-8111-111111111111","text":"Use TEST DATA only","created_at":"2026-10-19T12:00:00Z","ledger_entry_id":"22222222-2222-4222-8222-222222222222"}]',
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", gateway);
+
+    const response = await GET(
+      new NextRequest("http://judge.test/api/pru/v1/clients/demo-avery/notes"),
+      { params: Promise.resolve({ path: ["v1", "clients", "demo-avery", "notes"] }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject([{ text: "Use TEST DATA only" }]);
+    expect(gateway).toHaveBeenCalledOnce();
+    expect(gateway.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8787/v1/clients/demo-avery/notes",
+    );
+  });
+
   it("preserves gateway status inside the chat stream and sends only JSON upstream", async () => {
     const gateway = vi.fn().mockResolvedValue(new Response('{"error":"policy denied"}', {
       status: 403,

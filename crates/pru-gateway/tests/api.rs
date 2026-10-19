@@ -124,6 +124,20 @@ fn consent_body(recipient: Option<&str>) -> Value {
     })
 }
 
+fn write_note_file(root: &std::path::Path, workspace: &str, text: &str, suffix: u32) {
+    let note = json!({
+        "id": format!("00000000-0000-4000-8000-{suffix:012}"),
+        "text": text,
+        "created_at": "2026-10-19T12:00:00Z",
+        "ledger_entry_id": format!("10000000-0000-4000-8000-{suffix:012}")
+    });
+    std::fs::write(
+        root.join(workspace).join(CLIENT_A).join("notes.jsonl"),
+        format!("{note}\n"),
+    )
+    .expect("write note fixture");
+}
+
 #[tokio::test]
 async fn health_endpoint_reports_ok() {
     let (health_url, task) = health_stub().await;
@@ -293,6 +307,74 @@ async fn reset_restores_two_public_summaries_and_clears_consent_state() {
     )
     .await;
     assert!(listed.as_array().expect("consent list").is_empty());
+}
+
+#[tokio::test]
+async fn reset_clears_agent_notes() {
+    let harness = harness();
+    let (status, _) = request(&harness.app, Method::GET, "/v1/demo/clients", None).await;
+    assert_eq!(status, StatusCode::OK);
+    write_note_file(&harness.root, WORKSPACE_A, "Clear this TEST DATA note", 1);
+
+    let (status, notes) = request(
+        &harness.app,
+        Method::GET,
+        &format!("/v1/clients/{CLIENT_A}/notes"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(notes.as_array().expect("notes").len(), 1);
+
+    let (status, _) = request(
+        &harness.app,
+        Method::POST,
+        "/v1/demo/reset",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, notes) = request(
+        &harness.app,
+        Method::GET,
+        &format!("/v1/clients/{CLIENT_A}/notes"),
+        None,
+    )
+    .await;
+    assert!(notes.as_array().expect("notes").is_empty());
+}
+
+#[tokio::test]
+async fn notes_route_is_isolated_per_workspace() {
+    let harness = harness();
+    for workspace in [WORKSPACE_A, WORKSPACE_B] {
+        let (status, _) = request_in_workspace(
+            &harness.app,
+            workspace,
+            Method::GET,
+            "/v1/demo/clients",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    write_note_file(&harness.root, WORKSPACE_A, "Workspace A note", 1);
+    write_note_file(&harness.root, WORKSPACE_B, "Workspace B note", 2);
+
+    let mut notes = Vec::new();
+    for workspace in [WORKSPACE_A, WORKSPACE_B] {
+        let (status, body) = request_in_workspace(
+            &harness.app,
+            workspace,
+            Method::GET,
+            &format!("/v1/clients/{CLIENT_A}/notes"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        notes.push(body[0]["text"].as_str().expect("note text").to_owned());
+    }
+    assert_eq!(notes, ["Workspace A note", "Workspace B note"]);
 }
 
 #[tokio::test]

@@ -358,6 +358,42 @@ async fn ssn_bearing_note_is_denied_without_writing_notes() {
 }
 
 #[tokio::test]
+async fn twenty_first_note_is_refused_without_growing_the_file() {
+    let harness = harness().await;
+    let path = harness
+        .root
+        .join(WORKSPACE)
+        .join(CLIENT)
+        .join("notes.jsonl");
+    let body = (0..20)
+        .map(|index| {
+            json!({
+                "id": format!("00000000-0000-4000-8000-{index:012}"),
+                "text": format!("Existing note {index}"),
+                "created_at": "2026-10-19T12:00:00Z",
+                "ledger_entry_id": format!("10000000-0000-4000-8000-{index:012}")
+            })
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!("{body}\n")).expect("write twenty notes");
+
+    let arguments = json!({"text": "One note too many"});
+    harness.seed_pending("remember_note", arguments.clone());
+    let response = call_tool(&harness.mcp, "remember_note", arguments).await;
+
+    assert_eq!(response["result"]["isError"], true);
+    assert!(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("error text")
+            .contains("maximum 20 notes")
+    );
+    assert_eq!(harness.notes().lines().count(), 20);
+}
+
+#[tokio::test]
 async fn local_model_answer_is_redacted_before_returning_to_hermes() {
     let harness = harness().await;
     let arguments = json!({"question": "Check this client's SSN"});
