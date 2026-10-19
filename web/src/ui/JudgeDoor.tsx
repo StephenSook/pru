@@ -53,7 +53,13 @@ function decisionLabel(decision: string): string {
   return decision.toUpperCase();
 }
 
-export function JudgeDoor() {
+export function localModelLocation(hosted: boolean): string {
+  return hosted
+    ? "this server's own model, never sent to a model provider"
+    : "this PC's own model, never sent to a model provider";
+}
+
+export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   const [clients, setClients] = useState<DemoClient[]>([]);
   const [clientId, setClientId] = useState("");
   const [consents, setConsents] = useState<Consent[]>([]);
@@ -211,6 +217,9 @@ export function JudgeDoor() {
 
       <div className="workspace">
         <SectionCard eyebrow="01 · TRY THE BOUNDARY" title="Ask Pru" className="chat-card">
+          <p className="route-note">
+            <strong>LOCAL:</strong> {localModelLocation(hosted)}
+          </p>
           <div className="presets">
             {PRESETS.map((preset, index) => (
               <button key={preset} type="button" onClick={() => void sendMessage(preset)} disabled={busy}>
