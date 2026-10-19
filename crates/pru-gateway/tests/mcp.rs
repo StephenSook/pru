@@ -11,7 +11,7 @@ use chrono::{TimeDelta, Utc};
 use pru_consent::{ConsentAuthority, ConsentKind, ConsentRecord, RevocationList};
 use pru_gateway::{
     GatewayConfig, GatewayState,
-    agent::{AgentCredential, AgentTurnLease},
+    agent::{AgentCredential, AgentTurnError, AgentTurnLease},
     api::{ApiState, api_router},
     mcp::{MCP_TOOL_NAMES, mcp_router},
     workspace::{WORKSPACE_HEADER, WorkspaceManager},
@@ -167,11 +167,21 @@ async fn harness() -> Harness {
 }
 
 async fn raw_request(app: &Router, method: Method, body: Option<Value>) -> (StatusCode, Vec<u8>) {
+    raw_request_with_bearer(app, method, body, SECRET).await
+}
+
+async fn raw_request_with_bearer(
+    app: &Router,
+    method: Method,
+    body: Option<Value>,
+    bearer: &str,
+) -> (StatusCode, Vec<u8>) {
     let mut builder = Request::builder()
         .method(method)
         .uri("/mcp")
         .header("host", "127.0.0.1:8787")
         .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("Bearer {bearer}"))
         .header("mcp-protocol-version", "2025-11-25");
     let bytes = if let Some(body) = body {
         builder = builder.header("content-type", "application/json");
@@ -190,6 +200,27 @@ async fn raw_request(app: &Router, method: Method, body: Option<Value>) -> (Stat
         .expect("response body")
         .to_vec();
     (status, bytes)
+}
+
+#[tokio::test]
+async fn invalid_agent_credential_is_refused_before_mcp_dispatch() {
+    let harness = harness().await;
+    let (status, body) = raw_request_with_bearer(
+        &harness.mcp,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        })),
+        "4444444444444444444444444444444444444444444444444444444444444444",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(String::from_utf8_lossy(&body).contains("agent credential is invalid"));
+    assert!(harness.ledger().is_empty());
 }
 
 async fn rpc(app: &Router, id: u64, method: &str, params: Value) -> Value {
@@ -297,14 +328,14 @@ async fn unmatched_tool_call_is_refused_without_a_row_or_side_effect() {
 
 #[tokio::test]
 async fn draft_requires_exact_disclosure_consent_and_never_sends() {
-    let harness = harness().await;
+    let denied_harness = harness().await;
     let arguments = json!({
         "to": "avery.morgan@example.com",
         "subject": "Synthetic follow-up",
         "body": "Please send the TEST DATA form."
     });
-    harness.seed_pending("draft_client_email", arguments.clone());
-    let denied = call_tool(&harness.mcp, "draft_client_email", arguments.clone()).await;
+    denied_harness.seed_pending("draft_client_email", arguments.clone());
+    let denied = call_tool(&denied_harness.mcp, "draft_client_email", arguments.clone()).await;
     assert_eq!(denied["result"]["isError"], true);
     assert!(
         denied["result"]["content"][0]["text"]
@@ -312,10 +343,12 @@ async fn draft_requires_exact_disclosure_consent_and_never_sends() {
             .expect("error text")
             .contains("consent_facts_do_not_match")
     );
+    drop(denied_harness);
 
-    mint_disclosure(&harness.api, "avery.morgan@example.com").await;
-    harness.seed_pending("draft_client_email", arguments.clone());
-    let allowed = call_tool(&harness.mcp, "draft_client_email", arguments).await;
+    let allowed_harness = harness().await;
+    mint_disclosure(&allowed_harness.api, "avery.morgan@example.com").await;
+    allowed_harness.seed_pending("draft_client_email", arguments.clone());
+    let allowed = call_tool(&allowed_harness.mcp, "draft_client_email", arguments).await;
     assert_eq!(allowed["result"]["isError"], false);
     assert_eq!(allowed["result"]["structuredContent"]["sent"], false);
 }
@@ -355,6 +388,13 @@ async fn ssn_bearing_note_is_denied_without_writing_notes() {
     );
     assert!(harness.notes().is_empty());
     assert_eq!(harness.ledger().len(), 1);
+    assert!(matches!(
+        harness
+            .state
+            .agent_turns()
+            .reserve_model_call(harness.turn.turn_id()),
+        Err(AgentTurnError::Terminated)
+    ));
 }
 
 #[tokio::test]

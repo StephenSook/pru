@@ -1,5 +1,12 @@
 use std::sync::Arc;
 
+use axum::{
+    Json,
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+};
 use chrono::Utc;
 use pru_consent::ConsentKind;
 use rmcp::{
@@ -37,7 +44,7 @@ struct PruMcpServer {
 }
 
 pub fn mcp_router(state: ApiState) -> axum::Router {
-    let factory_state = state;
+    let factory_state = state.clone();
     let service: StreamableHttpService<PruMcpServer, NeverSessionManager> =
         StreamableHttpService::new(
             move || {
@@ -51,7 +58,26 @@ pub fn mcp_router(state: ApiState) -> axum::Router {
                 .with_json_response(true)
                 .with_allowed_hosts(["127.0.0.1", "localhost", "[::1]"]),
         );
-    axum::Router::new().nest_service("/mcp", service)
+    axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(state, mcp_auth_guard))
+}
+
+async fn mcp_auth_guard(State(state): State<ApiState>, request: Request, next: Next) -> Response {
+    let bearer = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if state.agent_credential().matches_bearer(bearer) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "The agent credential is invalid."})),
+        )
+            .into_response()
+    }
 }
 
 impl ServerHandler for PruMcpServer {
@@ -101,9 +127,15 @@ impl ServerHandler for PruMcpServer {
                         success.structured_content = Some(result);
                         success
                     }
-                    Err(message) => tool_error(message),
+                    Err(message) => {
+                        let _ = server.state.agent_turns().terminate(turn.turn_id);
+                        tool_error(message)
+                    }
                 },
-                Err(message) => tool_error(message),
+                Err(message) => {
+                    let _ = server.state.agent_turns().terminate(turn.turn_id);
+                    tool_error(message)
+                }
             };
             Ok(result.into())
         }

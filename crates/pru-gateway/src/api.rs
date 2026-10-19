@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::agent::{AgentCredential, AgentTurnRegistry};
-use crate::chat::{ChatRequest, ChatResponse, run_chat};
+use crate::agent::{AgentCredential, AgentTurnError, AgentTurnRegistry};
+use crate::chat::{AgentBackend, ChatRequest, ChatResponse, run_chat};
 use crate::limits::{CLIENT_IP_HEADER, LimitError, RequestRateLimiter};
 use crate::workspace::{WORKSPACE_HEADER, WorkspaceContext, WorkspaceError, WorkspaceManager};
 use crate::{GatewayError, GatewayState, validate_client_id};
@@ -41,6 +41,8 @@ pub struct ApiState {
     storage_lock: Arc<Mutex<()>>,
     agent_turns: AgentTurnRegistry,
     agent_credential: AgentCredential,
+    agent_backend: AgentBackend,
+    agent_client: reqwest::Client,
 }
 
 impl ApiState {
@@ -64,7 +66,15 @@ impl ApiState {
             storage_lock: Arc::new(Mutex::new(())),
             agent_turns: AgentTurnRegistry::new(),
             agent_credential,
+            agent_backend: AgentBackend::Builtin,
+            agent_client: reqwest::Client::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_agent_backend(mut self, agent_backend: AgentBackend) -> Self {
+        self.agent_backend = agent_backend;
+        self
     }
 
     #[must_use]
@@ -80,6 +90,16 @@ impl ApiState {
     #[must_use]
     pub fn agent_credential(&self) -> &AgentCredential {
         &self.agent_credential
+    }
+
+    #[must_use]
+    pub(crate) fn agent_backend(&self) -> &AgentBackend {
+        &self.agent_backend
+    }
+
+    #[must_use]
+    pub(crate) fn agent_client(&self) -> &reqwest::Client {
+        &self.agent_client
     }
 
     pub fn reset_demo(
@@ -699,6 +719,8 @@ pub enum ApiError {
     Workspace(#[from] WorkspaceError),
     #[error(transparent)]
     Limit(#[from] LimitError),
+    #[error(transparent)]
+    AgentTurn(#[from] AgentTurnError),
     #[error("consent not found")]
     NotFound,
     #[error("storage failed: {0}")]
@@ -711,6 +733,8 @@ pub enum ApiError {
     PayloadTooLarge,
     #[error("model response was invalid")]
     ModelProtocol,
+    #[error("Hermes Agent is unavailable: {0}")]
+    AgentTransport(String),
 }
 
 impl IntoResponse for ApiError {
@@ -723,6 +747,18 @@ impl IntoResponse for ApiError {
             Self::Limit(LimitError::IpRate | LimitError::WorkspaceRate) => {
                 StatusCode::TOO_MANY_REQUESTS
             }
+            Self::AgentTurn(
+                AgentTurnError::Busy
+                | AgentTurnError::ModelCallLimit
+                | AgentTurnError::ToolCallLimit,
+            ) => StatusCode::TOO_MANY_REQUESTS,
+            Self::AgentTurn(
+                AgentTurnError::Missing
+                | AgentTurnError::Mismatch
+                | AgentTurnError::Expired
+                | AgentTurnError::Terminated
+                | AgentTurnError::UnmatchedToolCall,
+            ) => StatusCode::CONFLICT,
             Self::Consent(_)
             | Self::Gateway(GatewayError::Consent(_))
             | Self::InvalidRequest(_)
@@ -732,10 +768,11 @@ impl IntoResponse for ApiError {
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Storage(_)
             | Self::Workspace(WorkspaceError::State | WorkspaceError::Storage)
-            | Self::Limit(LimitError::TokenBudget | LimitError::State | LimitError::Storage) => {
+            | Self::Limit(LimitError::TokenBudget | LimitError::State | LimitError::Storage)
+            | Self::AgentTurn(AgentTurnError::State | AgentTurnError::Protocol(_)) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-            Self::ModelProtocol => StatusCode::BAD_GATEWAY,
+            Self::ModelProtocol | Self::AgentTransport(_) => StatusCode::BAD_GATEWAY,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }

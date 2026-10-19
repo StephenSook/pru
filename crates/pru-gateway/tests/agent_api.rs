@@ -11,7 +11,7 @@ use chrono::Utc;
 use pru_consent::{ConsentAuthority, ConsentKind, ConsentRecord, RevocationList};
 use pru_gateway::{
     GatewayConfig, GatewayState, TOKEN_FACTORY_MODEL,
-    agent::{AgentCredential, AgentTurnLease},
+    agent::{AgentCredential, AgentTurnError, AgentTurnLease},
     agent_api::agent_router,
     api::ApiState,
     workspace::WorkspaceManager,
@@ -259,6 +259,13 @@ async fn empty_use_consent_is_refused_with_the_agent_reason() {
     let ledger = harness.ledger();
     assert_eq!(ledger.len(), 1);
     assert_eq!(ledger[0]["policy_reason"], "matching_consent_required");
+    assert!(matches!(
+        harness
+            .state
+            .agent_turns()
+            .reserve_model_call(turn.turn_id()),
+        Err(AgentTurnError::Terminated)
+    ));
 }
 
 #[tokio::test]

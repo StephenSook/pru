@@ -79,6 +79,7 @@ struct ActiveAgentTurn {
     deadline: Instant,
     model_calls: u8,
     tool_calls: u8,
+    terminated: bool,
     pending_tool_calls: Vec<PendingToolCall>,
 }
 
@@ -159,6 +160,7 @@ impl AgentTurnRegistry {
             deadline: Instant::now() + self.inner.turn_ttl,
             model_calls: 0,
             tool_calls: 0,
+            terminated: false,
             pending_tool_calls: Vec::new(),
         });
         drop(active);
@@ -230,6 +232,9 @@ impl AgentTurnRegistry {
         if Instant::now() >= turn.deadline {
             return Err(AgentTurnError::Expired);
         }
+        if turn.terminated {
+            return Err(AgentTurnError::Terminated);
+        }
         let position = turn
             .pending_tool_calls
             .iter()
@@ -241,6 +246,13 @@ impl AgentTurnRegistry {
         turn.pending_tool_calls.remove(position);
         turn.tool_calls += 1;
         Ok(snapshot(turn))
+    }
+
+    pub fn terminate(&self, expected: Uuid) -> Result<(), AgentTurnError> {
+        self.with_active(expected, |turn| {
+            turn.terminated = true;
+            Ok(())
+        })
     }
 
     fn with_active<T>(
@@ -259,6 +271,9 @@ impl AgentTurnRegistry {
         }
         if Instant::now() >= turn.deadline {
             return Err(AgentTurnError::Expired);
+        }
+        if turn.terminated {
+            return Err(AgentTurnError::Terminated);
         }
         operation(turn)
     }
@@ -358,6 +373,8 @@ pub enum AgentTurnError {
     Mismatch,
     #[error("the Hermes turn expired after {AGENT_TURN_TTL_SECS} seconds")]
     Expired,
+    #[error("the Hermes turn ended after a gateway refusal")]
+    Terminated,
     #[error("the Hermes turn exceeded {MAX_AGENT_MODEL_CALLS} model calls")]
     ModelCallLimit,
     #[error("the Hermes turn exceeded {MAX_AGENT_TOOL_CALLS} tool calls")]
@@ -376,9 +393,11 @@ impl IntoResponse for AgentTurnError {
             Self::Busy | Self::ModelCallLimit | Self::ToolCallLimit => {
                 StatusCode::TOO_MANY_REQUESTS
             }
-            Self::Missing | Self::Mismatch | Self::Expired | Self::UnmatchedToolCall => {
-                StatusCode::CONFLICT
-            }
+            Self::Missing
+            | Self::Mismatch
+            | Self::Expired
+            | Self::Terminated
+            | Self::UnmatchedToolCall => StatusCode::CONFLICT,
             Self::State | Self::Protocol(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error": self.to_string()}))).into_response()

@@ -112,7 +112,15 @@ async fn chat_completions(State(state): State<ApiState>, request: Request) -> Re
             }
             Json(result).into_response()
         }
-        Err(error) => gateway_error(error),
+        Err(error) => {
+            if matches!(
+                &error,
+                GatewayError::Consent(_) | GatewayError::PolicyDenied(_)
+            ) {
+                let _ = state.agent_turns().terminate(turn_id);
+            }
+            gateway_error(error)
+        }
     }
 }
 

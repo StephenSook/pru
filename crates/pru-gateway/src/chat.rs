@@ -1,3 +1,5 @@
+use std::{collections::HashMap, time::Duration};
+
 use chrono::Utc;
 use pru_consent::ConsentKind;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,31 @@ const MAX_TOOL_CALLS: usize = 4;
 const MAX_OUTPUT_TOKENS: u64 = 2_000;
 const TOKENS_PER_CALL: u64 = 500;
 const DEFAULT_PURPOSE: &str = "prepare this synthetic tax client's return";
+pub const HERMES_AGENT_VERSION: &str = "0.22.2";
+const HERMES_AGENT_NAME: &str = "Hermes Agent";
+const HERMES_REQUEST_TIMEOUT_SECS: u64 = 90;
+
+#[derive(Clone, Debug)]
+pub enum AgentBackend {
+    Builtin,
+    Hermes(HermesAgentConfig),
+}
+
+#[derive(Clone, Debug)]
+pub struct HermesAgentConfig {
+    pub base_url: String,
+    pub api_key: String,
+}
+
+impl HermesAgentConfig {
+    #[must_use]
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
@@ -28,8 +55,15 @@ pub struct ChatRequest {
 #[derive(Debug, Serialize)]
 pub struct ChatResponse {
     pub turn_id: Uuid,
+    pub agent: AgentIdentity,
     pub answer: String,
     pub steps: Vec<ChatStep>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AgentIdentity {
+    pub name: String,
+    pub version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,6 +80,7 @@ pub struct ChatStep {
     pub ledger_entry_id: Uuid,
     pub dry_run: bool,
     pub tool_name: Option<String>,
+    pub redacted_spans: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +103,9 @@ pub async fn run_chat(
     client_id: &str,
     request: ChatRequest,
 ) -> Result<ChatResponse, ApiError> {
+    if let AgentBackend::Hermes(config) = state.agent_backend() {
+        return run_hermes_chat(state, workspace, client_id, request, config).await;
+    }
     reject_potentially_issued_ssns([request.message.as_str()])?;
     state.ensure_demo_client(client_id)?;
     if request.message.chars().count() > MAX_INPUT_CHARS {
@@ -142,6 +180,7 @@ pub async fn run_chat(
                 steps.push(step);
                 return Ok(ChatResponse {
                     turn_id: Uuid::new_v4(),
+                    agent: builtin_identity(),
                     answer,
                     steps,
                 });
@@ -176,6 +215,7 @@ pub async fn run_chat(
             ledger_entry_id: action.ledger_entry_id,
             dry_run: false,
             tool_name: None,
+            redacted_spans: 0,
         });
 
         let message = result
@@ -194,6 +234,7 @@ pub async fn run_chat(
                 .ok_or(ApiError::ModelProtocol)?;
             return Ok(ChatResponse {
                 turn_id: Uuid::new_v4(),
+                agent: builtin_identity(),
                 answer: redact_ssns(answer),
                 steps,
             });
@@ -223,6 +264,7 @@ pub async fn run_chat(
                     .unwrap_or_else(|| "policy denied the dry run".to_owned());
                 return Ok(ChatResponse {
                     turn_id: Uuid::new_v4(),
+                    agent: builtin_identity(),
                     answer,
                     steps,
                 });
@@ -238,9 +280,252 @@ pub async fn run_chat(
 
     Ok(ChatResponse {
         turn_id: Uuid::new_v4(),
+        agent: builtin_identity(),
         answer: "The bounded turn stopped after four model calls.".to_owned(),
         steps,
     })
+}
+
+async fn run_hermes_chat(
+    state: &ApiState,
+    workspace: &WorkspaceContext,
+    client_id: &str,
+    request: ChatRequest,
+    config: &HermesAgentConfig,
+) -> Result<ChatResponse, ApiError> {
+    reject_potentially_issued_ssns([request.message.as_str()])?;
+    state.ensure_demo_client(client_id)?;
+    if request.message.chars().count() > MAX_INPUT_CHARS {
+        return Err(ApiError::InvalidRequest(format!(
+            "message exceeds {MAX_INPUT_CHARS} characters"
+        )));
+    }
+    if request.message.trim().is_empty() {
+        return Err(ApiError::InvalidRequest(
+            "message must not be empty".to_owned(),
+        ));
+    }
+    workspace.mark_touched()?;
+
+    let client = read_demo_client(state, workspace, client_id)?;
+    let consents = read_consents(state, workspace, client_id)?;
+    let notes = state.read_agent_notes(workspace, client_id)?;
+    let use_consent = select_consent(&consents, ConsentKind::Use, None);
+    let purpose = use_consent
+        .map(|consent| consent.record.purpose.clone())
+        .unwrap_or_else(|| DEFAULT_PURPOSE.to_owned());
+    let consent_token = use_consent
+        .map(|consent| consent.token.clone())
+        .unwrap_or_default();
+    let turn = state
+        .agent_turns()
+        .begin(
+            workspace.clone(),
+            client_id.to_owned(),
+            purpose,
+            consent_token,
+        )
+        .await?;
+    let turn_id = turn.turn_id();
+    let preamble = hermes_preamble(&client, &notes);
+    let hermes_result = call_hermes(
+        state,
+        config,
+        turn_id,
+        json!({
+            "model": "hermes-agent",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are Pru in a TEST DATA demo. Use only the Pru MCP tools for client facts and actions. Never invent client data. Email and calendar tools are dry-run only."
+                },
+                {
+                    "role": "user",
+                    "content": format!("{preamble}\n\nVisitor request:\n{}", request.message)
+                }
+            ],
+            "stream": false
+        }),
+    )
+    .await;
+    drop(turn);
+    let cleanup_result = delete_hermes_session(state, config, turn_id).await;
+    let steps = hermes_steps(state, workspace, client_id, turn_id)?;
+
+    cleanup_result?;
+    if let Some(denied) = steps.iter().find(|step| step.decision == "deny") {
+        return Ok(ChatResponse {
+            turn_id,
+            agent: hermes_identity(),
+            answer: format!("Denied by the Pru gateway: {}", denied.policy_reason),
+            steps,
+        });
+    }
+    let response = hermes_result?;
+    let answer = response
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or(ApiError::ModelProtocol)?;
+    Ok(ChatResponse {
+        turn_id,
+        agent: hermes_identity(),
+        answer: redact_ssns(answer),
+        steps,
+    })
+}
+
+fn hermes_preamble(client: &DemoClient, notes: &[crate::api::AgentNote]) -> String {
+    let notes = if notes.is_empty() {
+        "- None".to_owned()
+    } else {
+        notes
+            .iter()
+            .map(|note| format!("- {}", note.text))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "TEST DATA client selected by the visitor\nName: {}\nEmail: {}\nFiling status: {}\nPru remembers:\n{}\nUse Pru tools for any other client fact.",
+        client.name, client.email, client.filing_status, notes
+    )
+}
+
+async fn call_hermes(
+    state: &ApiState,
+    config: &HermesAgentConfig,
+    turn_id: Uuid,
+    body: Value,
+) -> Result<Value, ApiError> {
+    let response = state
+        .agent_client()
+        .post(format!(
+            "{}/v1/chat/completions",
+            config.base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(&config.api_key)
+        .header("x-hermes-session-id", turn_id.to_string())
+        .timeout(Duration::from_secs(HERMES_REQUEST_TIMEOUT_SECS))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| ApiError::AgentTransport(error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| ApiError::AgentTransport(error.to_string()))?;
+    if !status.is_success() {
+        return Err(ApiError::AgentTransport(format!(
+            "Hermes returned HTTP {status}"
+        )));
+    }
+    if bytes.len() > 1_000_000 {
+        return Err(ApiError::AgentTransport(
+            "Hermes response exceeded 1000000 bytes".to_owned(),
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| ApiError::ModelProtocol)
+}
+
+async fn delete_hermes_session(
+    state: &ApiState,
+    config: &HermesAgentConfig,
+    turn_id: Uuid,
+) -> Result<(), ApiError> {
+    let response = state
+        .agent_client()
+        .delete(format!(
+            "{}/api/sessions/{turn_id}",
+            config.base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(&config.api_key)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|error| ApiError::AgentTransport(error.to_string()))?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(ApiError::AgentTransport(format!(
+            "Hermes session deletion returned HTTP {}",
+            response.status()
+        )))
+    }
+}
+
+fn hermes_steps(
+    state: &ApiState,
+    workspace: &WorkspaceContext,
+    client_id: &str,
+    turn_id: Uuid,
+) -> Result<Vec<ChatStep>, ApiError> {
+    let turn_id = turn_id.to_string();
+    let mut entries = state
+        .gateway()
+        .ledger_entries_in_workspace(&workspace.id(), client_id)?
+        .into_iter()
+        .filter(|entry| entry["turn_id"].as_str() == Some(turn_id.as_str()))
+        .collect::<Vec<_>>();
+    entries.reverse();
+    let completions = entries
+        .iter()
+        .filter(|entry| entry["event"].as_str() == Some("completion"))
+        .filter_map(|entry| {
+            entry["authorization_id"]
+                .as_str()
+                .map(|id| (id.to_owned(), entry))
+        })
+        .collect::<HashMap<_, _>>();
+
+    entries
+        .iter()
+        .filter(|entry| entry["event"].as_str() != Some("completion"))
+        .map(|entry| {
+            let id = entry["id"].as_str().ok_or(ApiError::ModelProtocol)?;
+            let completion = completions.get(id).copied();
+            let route = entry["route"].as_str().unwrap_or("unknown");
+            let input_tokens = completion
+                .and_then(|row| row["input_tokens"].as_u64())
+                .unwrap_or_default();
+            let output_tokens = completion
+                .and_then(|row| row["output_tokens"].as_u64())
+                .unwrap_or_default();
+            Ok(ChatStep {
+                kind: entry["step"].as_str().unwrap_or("unknown").to_owned(),
+                route: route.to_owned(),
+                model_id: entry["model_id"].as_str().map(str::to_owned),
+                latency_ms: completion
+                    .and_then(|row| row["latency_ms"].as_u64())
+                    .map_or(0, u128::from),
+                input_tokens,
+                output_tokens,
+                cost_usd: model_cost(route, input_tokens, output_tokens),
+                decision: entry["decision"].as_str().unwrap_or("unknown").to_owned(),
+                policy_reason: entry["policy_reason"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_owned(),
+                ledger_entry_id: Uuid::parse_str(id).map_err(|_| ApiError::ModelProtocol)?,
+                dry_run: route == "dry_run",
+                tool_name: entry["tool"].as_str().map(str::to_owned),
+                redacted_spans: entry["redacted_spans"].as_u64().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn builtin_identity() -> AgentIdentity {
+    AgentIdentity {
+        name: "Pru built-in loop".to_owned(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
+
+fn hermes_identity() -> AgentIdentity {
+    AgentIdentity {
+        name: HERMES_AGENT_NAME.to_owned(),
+        version: HERMES_AGENT_VERSION.to_owned(),
+    }
 }
 
 fn select_excerpt(client: &DemoClient, message: &str) -> String {
@@ -343,6 +628,7 @@ async fn execute_tool(
             ledger_entry_id: action.ledger_entry_id,
             dry_run: action.dry_run,
             tool_name: Some(name.to_owned()),
+            redacted_spans: 0,
         }),
         Err(error @ (GatewayError::Consent(_) | GatewayError::PolicyDenied(_))) => {
             denied_step(state, workspace, client_id, "tool", Some(name), &error)
@@ -383,6 +669,7 @@ fn denied_step(
             .map_err(|_| ApiError::ModelProtocol)?,
         dry_run: false,
         tool_name: tool_name.map(str::to_owned),
+        redacted_spans: entry["redacted_spans"].as_u64().unwrap_or_default(),
     })
 }
 

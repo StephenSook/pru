@@ -6,6 +6,7 @@ use pru_gateway::{
     agent::AgentCredential,
     agent_api::agent_router,
     api::{ApiState, api_router},
+    chat::{AgentBackend, HermesAgentConfig},
     mcp::mcp_router,
     router,
 };
@@ -57,8 +58,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |_| Ok(AgentCredential::generate()),
         |value| AgentCredential::from_hex(&value),
     )?;
+    let agent_backend = match env::var("PRU_AGENT")
+        .unwrap_or_else(|_| "builtin".to_owned())
+        .as_str()
+    {
+        "builtin" => AgentBackend::Builtin,
+        "hermes" => {
+            let api_key = env::var("PRU_HERMES_API_KEY")?;
+            if api_key.trim().is_empty() {
+                return Err("PRU_HERMES_API_KEY must not be empty in Hermes mode".into());
+            }
+            AgentBackend::Hermes(HermesAgentConfig::new(
+                env::var("PRU_HERMES_URL").unwrap_or_else(|_| "http://127.0.0.1:8642".to_owned()),
+                api_key,
+            ))
+        }
+        mode => return Err(format!("PRU_AGENT must be builtin or hermes, got {mode}").into()),
+    };
     let api_state =
-        ApiState::with_agent_credential(gateway.clone(), authority, data_root, agent_credential);
+        ApiState::with_agent_credential(gateway.clone(), authority, data_root, agent_credential)
+            .with_agent_backend(agent_backend);
     let _workspace_cleanup = api_state.start_workspace_cleanup();
     let app = api_router(api_state.clone())
         .merge(agent_router(api_state.clone()))
