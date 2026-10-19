@@ -146,7 +146,13 @@ async fn health_endpoint_reports_ok() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body,
-        json!({"status": "ready", "gateway": "ready", "llama": "ready"})
+        json!({
+            "status": "ready",
+            "gateway": "ready",
+            "llama": "ready",
+            "agent": "built-in Rust loop",
+            "jail": "not applicable"
+        })
     );
 
     task.abort();
@@ -155,6 +161,8 @@ async fn health_endpoint_reports_ok() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["gateway"], "ready");
     assert_eq!(body["llama"], "unavailable");
+    assert_eq!(body["agent"], "built-in Rust loop");
+    assert_eq!(body["jail"], "not applicable");
 }
 
 #[tokio::test]

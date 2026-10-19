@@ -10,6 +10,8 @@ export async function GET() {
       status?: string;
       gateway?: string;
       llama?: string;
+      agent?: string;
+      jail?: string;
     };
     if (!response.ok) {
       return NextResponse.json(
@@ -18,17 +20,33 @@ export async function GET() {
           next: "ready",
           gateway: gateway.gateway ?? "unavailable",
           llama: gateway.llama ?? "unavailable",
+          agent: gateway.agent ?? "unknown",
+          jail: gateway.jail ?? "unknown",
         },
         { status: 503, headers: { "cache-control": "no-store" } },
       );
     }
     return NextResponse.json(
-      { status: "ready", next: "ready", gateway: "ready", llama: "ready" },
+      {
+        status: "ready",
+        next: "ready",
+        gateway: "ready",
+        llama: "ready",
+        agent: gateway.agent ?? "unknown",
+        jail: gateway.jail ?? "unknown",
+      },
       { headers: { "cache-control": "no-store" } },
     );
   } catch {
     return NextResponse.json(
-      { status: "starting", next: "ready", gateway: "unavailable", llama: "unknown" },
+      {
+        status: "starting",
+        next: "ready",
+        gateway: "unavailable",
+        llama: "unknown",
+        agent: "unknown",
+        jail: "unknown",
+      },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
   }

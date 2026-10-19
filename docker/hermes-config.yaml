@@ -1,0 +1,44 @@
+_config_version: 12
+model:
+  provider: pru
+  default: nvidia/Nemotron-3_5-Lightning
+  streaming: false
+  context_length: 131072
+providers:
+  pru:
+    api: http://127.0.0.1:8787/agent/v1
+    key_env: PRU_AGENT_SECRET
+    transport: chat_completions
+    context_length: 131072
+    discover_models: false
+    session_affinity_header: X-Pru-Turn
+mcp_servers:
+  pru:
+    url: http://127.0.0.1:8787/mcp
+    headers:
+      Authorization: "Bearer ${PRU_AGENT_SECRET}"
+    sampling:
+      enabled: false
+    tools:
+      prompts: false
+      resources: false
+platform_toolsets:
+  api_server:
+    - pru
+tools:
+  tool_search:
+    enabled: false
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+auxiliary:
+  title_generation:
+    enabled: false
+  background_review:
+    enabled: false
+model_catalog:
+  enabled: false
+agent:
+  max_turns: 6
+  api_max_retries: 0
+  auto_recovery_cycles: 0

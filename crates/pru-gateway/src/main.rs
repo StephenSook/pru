@@ -77,7 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let api_state =
         ApiState::with_agent_credential(gateway.clone(), authority, data_root, agent_credential)
-            .with_agent_backend(agent_backend);
+            .with_agent_backend(agent_backend)
+            .with_agent_runtime_status(
+                env::var("PRU_AGENT_LABEL").unwrap_or_else(|_| "built-in Rust loop".to_owned()),
+                env::var("PRU_AGENT_JAIL_STATUS").unwrap_or_else(|_| "not applicable".to_owned()),
+            );
     let _workspace_cleanup = api_state.start_workspace_cleanup();
     let app = api_router(api_state.clone())
         .merge(agent_router(api_state.clone()))

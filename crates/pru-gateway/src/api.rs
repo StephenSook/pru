@@ -43,6 +43,8 @@ pub struct ApiState {
     agent_credential: AgentCredential,
     agent_backend: AgentBackend,
     agent_client: reqwest::Client,
+    agent_label: String,
+    agent_jail: String,
 }
 
 impl ApiState {
@@ -68,12 +70,25 @@ impl ApiState {
             agent_credential,
             agent_backend: AgentBackend::Builtin,
             agent_client: reqwest::Client::new(),
+            agent_label: "built-in Rust loop".to_owned(),
+            agent_jail: "not applicable".to_owned(),
         }
     }
 
     #[must_use]
     pub fn with_agent_backend(mut self, agent_backend: AgentBackend) -> Self {
         self.agent_backend = agent_backend;
+        self
+    }
+
+    #[must_use]
+    pub fn with_agent_runtime_status(
+        mut self,
+        agent_label: impl Into<String>,
+        agent_jail: impl Into<String>,
+    ) -> Self {
+        self.agent_label = agent_label.into();
+        self.agent_jail = agent_jail.into();
         self
     }
 
@@ -389,7 +404,9 @@ async fn healthz(State(state): State<ApiState>) -> Response {
             Json(json!({
                 "status": "ready",
                 "gateway": "ready",
-                "llama": "ready"
+                "llama": "ready",
+                "agent": state.agent_label,
+                "jail": state.agent_jail
             })),
         )
             .into_response()
@@ -399,7 +416,9 @@ async fn healthz(State(state): State<ApiState>) -> Response {
             Json(json!({
                 "status": "starting",
                 "gateway": "ready",
-                "llama": "unavailable"
+                "llama": "unavailable",
+                "agent": state.agent_label,
+                "jail": state.agent_jail
             })),
         )
             .into_response()

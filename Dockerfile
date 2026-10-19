@@ -5,11 +5,17 @@ ARG MODEL_REVISION=ba223d14e45525f7fae81db77ea8cabeb2fc6c25
 ARG MODEL_FILE=NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf
 ARG MODEL_SHA256=be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2
 
+FROM nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919 AS hermes-slim
+RUN rm -rf \
+      /opt/hermes/tools/chromium-1208 \
+      /opt/hermes/tools/ffmpeg-9.0.1-linux-x64 \
+      /opt/hermes/uv-cache
+
 FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY crates ./crates
-RUN cargo build --locked --release -p pru-gateway
+RUN cargo build --locked --release -p pru-agent-jail -p pru-gateway
 
 FROM node:22-bookworm-slim AS web-builder
 WORKDIR /src/web
@@ -53,10 +59,12 @@ RUN mkdir -p /models \
 FROM node:22-bookworm-slim AS runtime-base
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 tini \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10000 hermes \
+    && useradd --uid 10000 --gid 10000 --home-dir /tmp/hermes-home --no-create-home --shell /usr/sbin/nologin hermes
 WORKDIR /app
 ENV NODE_ENV=production \
-    LD_LIBRARY_PATH=/opt/llama \
+    LD_LIBRARY_PATH=/usr/local/lib:/opt/llama \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
     PRU_BIND=127.0.0.1:8787 \
@@ -65,14 +73,27 @@ ENV NODE_ENV=production \
     PRU_LOCAL_LLM_HEALTH_URL=http://127.0.0.1:8081/health \
     PRU_LOCAL_LLM_MODEL=nemotron-3-nano-4b \
     PRU_DATA_DIR=/tmp/pru-data \
+    PRU_AGENT=hermes \
+    PRU_AGENT_REQUIRE_JAIL=1 \
+    PRU_HERMES_URL=http://127.0.0.1:8642 \
+    HERMES_HOME=/tmp/hermes-home \
+    HERMES_RUNTIME_DIR=/tmp/hermes \
     RUST_LOG=pru_gateway=info
 COPY --from=rust-builder /src/target/release/pru-gateway /usr/local/bin/pru-gateway
+COPY --from=rust-builder /src/target/release/pru-agent-jail /usr/local/bin/pru-agent-jail
 COPY --from=llama-builder /src/llama.cpp/build/bin/ /opt/llama/
+COPY --from=hermes-slim /opt/hermes/ /opt/hermes/
+COPY --from=hermes-slim /usr/local/lib/libsqlite3.so* /usr/local/lib/
 COPY --from=web-builder /src/web/.next/standalone/ /app/web/
 COPY --from=web-builder /src/web/.next/static/ /app/web/.next/static/
 COPY scripts/benchmark-local-model.mjs /app/benchmark-local-model.mjs
+COPY docker/hermes-config.yaml /etc/pru/hermes-config.yaml
 COPY docker/entrypoint.sh /usr/local/bin/pru-entrypoint
-RUN chmod 0755 /usr/local/bin/pru-entrypoint
+RUN ln -s /opt/hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3 /usr/local/bin/python3 \
+    && chmod 0755 /usr/local/bin/pru-entrypoint \
+    && HOME=/root/hermes-build-check HERMES_HOME=/root/hermes-build-check /opt/hermes/.venv/bin/hermes --version \
+    && rm -rf /root/hermes-build-check \
+    && pru-agent-jail --help >/dev/null
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=210s --retries=6 CMD curl --fail --silent http://127.0.0.1:3000/healthz >/dev/null || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pru-entrypoint"]

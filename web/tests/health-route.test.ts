@@ -6,10 +6,13 @@ afterEach(() => vi.unstubAllGlobals());
 describe("public readiness route", () => {
   it("reports ready only when the gateway reports its local model ready", async () => {
     const gateway = vi.fn().mockResolvedValue(
-      new Response('{"status":"ready","gateway":"ready","llama":"ready"}', {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        '{"status":"ready","gateway":"ready","llama":"ready","agent":"Hermes Agent v0.22.2 (Nous Research)","jail":"Landlock enforced (ABI 7)"}',
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     vi.stubGlobal("fetch", gateway);
 
@@ -21,6 +24,8 @@ describe("public readiness route", () => {
       next: "ready",
       gateway: "ready",
       llama: "ready",
+      agent: "Hermes Agent v0.22.2 (Nous Research)",
+      jail: "Landlock enforced (ABI 7)",
     });
     expect(gateway).toHaveBeenCalledOnce();
     expect(gateway.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8787/healthz");
@@ -30,10 +35,13 @@ describe("public readiness route", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
-        new Response('{"status":"starting","gateway":"ready","llama":"unavailable"}', {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          '{"status":"starting","gateway":"ready","llama":"unavailable","agent":"built-in Rust loop (Landlock unavailable)","jail":"required but unavailable"}',
+          {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       ),
     );
 
@@ -45,6 +53,8 @@ describe("public readiness route", () => {
       next: "ready",
       gateway: "ready",
       llama: "unavailable",
+      agent: "built-in Rust loop (Landlock unavailable)",
+      jail: "required but unavailable",
     });
   });
 });
