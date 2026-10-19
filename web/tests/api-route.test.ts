@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET, POST } from "../src/app/api/pru/[...path]/route";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("server-side gateway route", () => {
   it("forwards an allowed request without browser credentials", async () => {
@@ -96,5 +99,41 @@ describe("server-side gateway route", () => {
 
     const [, init] = gateway.mock.calls[0] as [string, RequestInit];
     expect(new Headers(init.headers).get("x-pru-client-ip")).toBe("203.0.113.10");
+  });
+
+  it("selects a trusted hop from the right of an appended forwarding chain", async () => {
+    vi.stubEnv("PRU_TRUSTED_CLIENT_IP_HEADER", "x-forwarded-for");
+    vi.stubEnv("PRU_TRUSTED_PROXY_HOPS", "1");
+    const gateway = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", gateway);
+
+    await GET(
+      new NextRequest("http://judge.test/api/pru/v1/demo/clients", {
+        headers: {
+          "x-forwarded-for": "198.51.100.99, 203.0.113.10",
+        },
+      }),
+      { params: Promise.resolve({ path: ["v1", "demo", "clients"] }) },
+    );
+
+    const [, init] = gateway.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-pru-client-ip")).toBe("203.0.113.10");
+  });
+
+  it("fails closed when the trusted proxy hop count is invalid", async () => {
+    vi.stubEnv("PRU_TRUSTED_CLIENT_IP_HEADER", "x-forwarded-for");
+    vi.stubEnv("PRU_TRUSTED_PROXY_HOPS", "2");
+    const gateway = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", gateway);
+
+    await GET(
+      new NextRequest("http://judge.test/api/pru/v1/demo/clients", {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      }),
+      { params: Promise.resolve({ path: ["v1", "demo", "clients"] }) },
+    );
+
+    const [, init] = gateway.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("x-pru-client-ip")).toBe("unknown");
   });
 });

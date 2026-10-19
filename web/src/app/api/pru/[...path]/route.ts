@@ -30,7 +30,16 @@ function workspaceId(request: NextRequest): string {
 function clientIp(request: NextRequest): string {
   const trustedHeader = process.env.PRU_TRUSTED_CLIENT_IP_HEADER?.trim().toLowerCase();
   if (!trustedHeader) return "unknown";
-  const candidate = request.headers.get(trustedHeader)?.split(",", 1)[0]?.trim() ?? "";
+  const values = request.headers.get(trustedHeader)?.split(",").map((value) => value.trim()) ?? [];
+  const rawHops = process.env.PRU_TRUSTED_PROXY_HOPS?.trim();
+  let candidate: string;
+  if (rawHops) {
+    const hops = Number(rawHops);
+    if (!Number.isSafeInteger(hops) || hops < 1 || hops > values.length) return "unknown";
+    candidate = values.at(-hops) ?? "";
+  } else {
+    candidate = values[0] ?? "";
+  }
   return isIP(candidate) ? candidate : "unknown";
 }
 
