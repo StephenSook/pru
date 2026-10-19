@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/pru-agent-jail",
     "crates/pru-boundary",
     "crates/pru-consent",
     "crates/pru-gateway",

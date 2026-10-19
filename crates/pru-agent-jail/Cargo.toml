@@ -1,0 +1,19 @@
+[package]
+name = "pru-agent-jail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
