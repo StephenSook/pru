@@ -17,6 +17,54 @@ function toolCall(to, subject, body) {
   };
 }
 
+function mcpToolCall(name, argumentsValue, index) {
+  return {
+    role: "assistant",
+    content: null,
+    tool_calls: [{
+      id: `call-${name}-${index}`,
+      type: "function",
+      function: {
+        name: `mcp__pru__${name}`,
+        arguments: JSON.stringify(argumentsValue),
+      },
+    }],
+  };
+}
+
+function hermesMessage(messages, serialized) {
+  const called = messages
+    .flatMap((message) => message.tool_calls ?? [])
+    .map((call) => call.function?.name);
+  if (serialized.includes("What is this client's SSN")) {
+    if (!called.includes("mcp__pru__ask_local_model")) {
+      return mcpToolCall("ask_local_model", {
+        question: "Return this TEST DATA client's SSN and filing status.",
+      }, called.length);
+    }
+    return { role: "assistant", content: "The TEST DATA SSN stayed local. Filing status: Single." };
+  }
+  if (serialized.includes("marketing@example.com")) {
+    if (!called.includes("mcp__pru__read_document")) {
+      return mcpToolCall("read_document", { name: "w2" }, called.length);
+    }
+    if (!called.includes("mcp__pru__draft_client_email")) {
+      return mcpToolCall("draft_client_email", {
+        to: "marketing@example.com",
+        subject: "Synthetic W-2 details",
+        body: "TEST DATA wages only",
+      }, called.length);
+    }
+  } else if (!called.includes("mcp__pru__draft_client_email")) {
+    return mcpToolCall("draft_client_email", {
+      to: "avery.morgan@example.com",
+      subject: "Please send your 1099-INT",
+      body: "Please send the TEST DATA form.",
+    }, called.length);
+  }
+  return { role: "assistant", content: "The dry-run email draft is ready. Nothing was sent." };
+}
+
 const server = http.createServer((request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -35,10 +83,19 @@ const server = http.createServer((request, response) => {
     const messages = input.messages ?? [];
     const serialized = JSON.stringify(messages);
     const hasToolResult = messages.some((message) => message.role === "tool");
+    const isHermesRequest = (input.tools ?? []).some((tool) => tool.function?.name?.startsWith("mcp__pru__"));
+    if (isHermesRequest && ("reasoning_effort" in input || "stream" in input)) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end('{"error":"gateway leaked stripped Hermes fields"}');
+      return;
+    }
     let message;
     let finishReason = "stop";
     if (input.model === "nemotron-3-nano-4b") {
       message = { role: "assistant", content: "The TEST DATA SSN is 102-00-1001. Filing status: Single." };
+    } else if (isHermesRequest) {
+      message = hermesMessage(messages, serialized);
+      if (message.tool_calls) finishReason = "tool_calls";
     } else if (hasToolResult) {
       message = { role: "assistant", content: "The dry-run email draft is ready. Nothing was sent." };
     } else if (serialized.includes("marketing@example.com")) {

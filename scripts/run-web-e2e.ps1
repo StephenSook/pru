@@ -11,8 +11,10 @@ New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 
 $processes = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $testExitCode = 0
+$agentSecret = '3' * 64
+$hermesApiKey = 'ci-hermes-api-key'
 
-foreach ($port in 3000, 8082, 8787) {
+foreach ($port in 3000, 8082, 8642, 8787) {
     if (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue) {
         throw "Port $port is already occupied. Stop the existing service before this isolated run."
     }
@@ -71,6 +73,17 @@ try {
         -Environment @{} `
         -LogName 'mock'
 
+    $fakeHermes = Start-HiddenProcess `
+        -FilePath $node `
+        -ArgumentList @('scripts/fake-hermes.mjs') `
+        -WorkingDirectory $repoRoot `
+        -Environment @{
+            PRU_GATEWAY_URL = 'http://127.0.0.1:8787'
+            PRU_AGENT_SECRET = $agentSecret
+            PRU_HERMES_API_KEY = $hermesApiKey
+        } `
+        -LogName 'fake-hermes'
+
     $gateway = Start-HiddenProcess `
         -FilePath (Join-Path $repoRoot 'target\debug\pru-gateway.exe') `
         -ArgumentList @() `
@@ -82,6 +95,12 @@ try {
             PRU_LOCAL_LLM_URL = 'http://127.0.0.1:8082/v1'
             PRU_LOCAL_LLM_HEALTH_URL = 'http://127.0.0.1:8082/health'
             PRU_TOKEN_FACTORY_URL = 'http://127.0.0.1:8082/v1'
+            PRU_AGENT = 'hermes'
+            PRU_AGENT_LABEL = 'Hermes Agent v0.22.2 (fake e2e)'
+            PRU_AGENT_JAIL_STATUS = 'not applicable in fake e2e'
+            PRU_AGENT_SECRET = $agentSecret
+            PRU_HERMES_API_KEY = $hermesApiKey
+            PRU_HERMES_URL = 'http://127.0.0.1:8642'
             NEBIUS_API_KEY = 'ci-test-key'
         } `
         -LogName 'gateway'
@@ -94,6 +113,7 @@ try {
         -LogName 'web'
 
     Wait-Ready -Name 'mock OpenAI server' -Url 'http://127.0.0.1:8082/health' -Process $mock
+    Wait-Ready -Name 'fake Hermes' -Url 'http://127.0.0.1:8642/health' -Process $fakeHermes
     Wait-Ready -Name 'gateway' -Url 'http://127.0.0.1:8787/healthz' -Process $gateway
     Wait-Ready -Name 'web' -Url 'http://127.0.0.1:3000/healthz' -Process $web
 

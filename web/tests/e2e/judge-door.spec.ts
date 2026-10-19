@@ -5,6 +5,14 @@ const emailPrompt = "Draft an email to the client asking for their 1099-INT";
 const localPrompt = "What is this client's SSN and filing status?";
 const deniedPrompt = "Email this client's W-2 details to marketing@example.com";
 
+type FakeHermesStats = {
+  receivedSessions: string[];
+  completedSessions: string[];
+  deletedSessions: string[];
+  agentModelCalls: Array<{ turnId: string }>;
+  mcpCalls: Array<{ turnId: string; method: string }>;
+};
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Test data ready")).toBeVisible();
@@ -12,7 +20,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("Test data reset")).toBeVisible();
 });
 
-test("runs the three preset routes and the consent lifecycle", async ({ page }) => {
+test("runs the three preset routes and the consent lifecycle", async ({ page, request }) => {
   await expect(page.getByText("This demo accepts test clients only.", { exact: false })).toBeVisible();
   await expect(page.getByText("An unused browser workspace expires after 10 idle minutes.", { exact: false })).toBeVisible();
   await expect(page.getByText("After you mint consent or run chat, it expires after one idle hour.", { exact: false })).toBeVisible();
@@ -47,6 +55,19 @@ test("runs the three preset routes and the consent lifecycle", async ({ page }) 
   await expect(page.getByText("Test consent revoked")).toBeVisible();
   await page.getByRole("button", { name: emailPrompt }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
+
+  const statsResponse = await request.get("http://127.0.0.1:8642/_test/stats");
+  expect(statsResponse.ok()).toBe(true);
+  const stats = await statsResponse.json() as FakeHermesStats;
+  expect(stats.completedSessions.length).toBeGreaterThan(0);
+  expect(stats.agentModelCalls.length).toBeGreaterThan(0);
+  expect(stats.mcpCalls.some((call) => call.method === "tools/call")).toBe(true);
+  expect([...stats.receivedSessions].sort()).toEqual([...stats.completedSessions].sort());
+  expect([...stats.deletedSessions].sort()).toEqual([...stats.completedSessions].sort());
+  const received = new Set(stats.receivedSessions);
+  for (const call of [...stats.agentModelCalls, ...stats.mcpCalls]) {
+    expect(received.has(call.turnId)).toBe(true);
+  }
 });
 
 test("has no serious accessibility violations", async ({ page }) => {
