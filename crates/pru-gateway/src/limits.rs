@@ -14,7 +14,7 @@ pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 pub const CLIENT_IP_HEADER: &str = "x-pru-client-ip";
 pub const MAX_REQUESTS_PER_IP_PER_WINDOW: usize = 120;
 pub const MAX_REQUESTS_PER_WORKSPACE_PER_WINDOW: usize = 30;
-pub const DAILY_TOKEN_FACTORY_TOKEN_BUDGET: u64 = 250_000;
+pub const DAILY_TOKEN_FACTORY_TOKEN_BUDGET: u64 = 1_000_000;
 pub const TOKEN_FACTORY_CALL_RESERVATION_TOKENS: u64 = 32_000;
 
 pub const IP_RATE_LIMIT_MESSAGE: &str =
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(RATE_LIMIT_WINDOW_SECS, 60);
         assert_eq!(MAX_REQUESTS_PER_IP_PER_WINDOW, 120);
         assert_eq!(MAX_REQUESTS_PER_WORKSPACE_PER_WINDOW, 30);
-        assert_eq!(DAILY_TOKEN_FACTORY_TOKEN_BUDGET, 250_000);
+        assert_eq!(DAILY_TOKEN_FACTORY_TOKEN_BUDGET, 1_000_000);
         assert_eq!(TOKEN_FACTORY_CALL_RESERVATION_TOKENS, 32_000);
     }
 }

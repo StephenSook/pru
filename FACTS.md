@@ -48,7 +48,7 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Active workspace cap | `200` | `crates/pru-gateway/src/workspace.rs` (`MAX_CONCURRENT_WORKSPACES`) | MEASURED |
 | Public request limits | `30 per workspace and 120 per IP per 60 seconds` | `crates/pru-gateway/src/limits.rs` (`MAX_REQUESTS_PER_WORKSPACE_PER_WINDOW`, `MAX_REQUESTS_PER_IP_PER_WINDOW`, `RATE_LIMIT_WINDOW_SECS`) | MEASURED |
 | Public request body cap | `16384 bytes` | `crates/pru-gateway/src/api.rs` (`MAX_REQUEST_BODY_BYTES`) and over-limit HTTP test | MEASURED |
-| Token Factory daily budget | `250000 tokens per UTC day; 32000-token in-flight reservation` | `crates/pru-gateway/src/limits.rs` (`DAILY_TOKEN_FACTORY_TOKEN_BUDGET`, `TOKEN_FACTORY_CALL_RESERVATION_TOKENS`) and persistence tests | MEASURED |
+| Token Factory daily budget | `1000000 tokens per UTC day; 32000-token in-flight reservation` | `crates/pru-gateway/src/limits.rs` (`DAILY_TOKEN_FACTORY_TOKEN_BUDGET`, `TOKEN_FACTORY_CALL_RESERVATION_TOKENS`) and persistence tests | MEASURED |
 | Concurrent local generations | `1` | `crates/pru-gateway/src/lib.rs` (`MAX_CONCURRENT_LOCAL_GENERATIONS`) and permit test | MEASURED |
 | Public readiness endpoint | `200 only when Next.js, the gateway, and llama-server are ready; no Token Factory call` | `web/src/app/healthz/route.ts`; `crates/pru-gateway/src/api.rs` (`healthz`); Rust and Vitest readiness tests | MEASURED |
 | llama-server starts without the Token Factory key | `env -u NEBIUS_API_KEY /opt/llama/llama-server` | `docker/entrypoint.sh:27` | MEASURED |

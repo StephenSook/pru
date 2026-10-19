@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
@@ -79,6 +79,14 @@ struct ActiveAgentTurn {
     deadline: Instant,
     model_calls: u8,
     tool_calls: u8,
+    pending_tool_calls: Vec<PendingToolCall>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingToolCall {
+    pub name: String,
+    pub arguments: Value,
+    pub canonical_arguments: String,
 }
 
 #[derive(Clone)]
@@ -90,6 +98,7 @@ pub struct ActiveTurnSnapshot {
     pub consent_token: String,
     pub model_calls: u8,
     pub tool_calls: u8,
+    pub pending_tool_calls: Vec<PendingToolCall>,
 }
 
 pub struct AgentTurnLease {
@@ -150,6 +159,7 @@ impl AgentTurnRegistry {
             deadline: Instant::now() + self.inner.turn_ttl,
             model_calls: 0,
             tool_calls: 0,
+            pending_tool_calls: Vec::new(),
         });
         drop(active);
         Ok(AgentTurnLease {
@@ -180,6 +190,25 @@ impl AgentTurnRegistry {
             }
             turn.tool_calls += 1;
             Ok(snapshot(turn))
+        })
+    }
+
+    pub fn replace_pending_tool_calls(
+        &self,
+        expected: Uuid,
+        response: &Value,
+    ) -> Result<(), AgentTurnError> {
+        let calls = response
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        let pending = calls
+            .iter()
+            .map(parse_pending_tool_call)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.with_active(expected, |turn| {
+            turn.pending_tool_calls = pending;
+            Ok(())
         })
     }
 
@@ -236,6 +265,55 @@ fn snapshot(turn: &ActiveAgentTurn) -> ActiveTurnSnapshot {
         consent_token: turn.consent_token.clone(),
         model_calls: turn.model_calls,
         tool_calls: turn.tool_calls,
+        pending_tool_calls: turn.pending_tool_calls.clone(),
+    }
+}
+
+fn parse_pending_tool_call(value: &Value) -> Result<PendingToolCall, AgentTurnError> {
+    let function = value
+        .get("function")
+        .ok_or_else(|| AgentTurnError::Protocol("tool call has no function".to_owned()))?;
+    let name = function
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgentTurnError::Protocol("tool call has no function name".to_owned()))?
+        .strip_prefix("mcp__pru__")
+        .unwrap_or_else(|| function["name"].as_str().expect("name checked above"))
+        .to_owned();
+    let encoded = function
+        .get("arguments")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AgentTurnError::Protocol("tool call arguments are not JSON text".to_owned())
+        })?;
+    let arguments = serde_json::from_str::<Value>(encoded).map_err(|error| {
+        AgentTurnError::Protocol(format!("invalid tool call arguments: {error}"))
+    })?;
+    let arguments = canonicalize_json(arguments);
+    let canonical_arguments = serde_json::to_string(&arguments).map_err(|error| {
+        AgentTurnError::Protocol(format!("encode tool call arguments: {error}"))
+    })?;
+    Ok(PendingToolCall {
+        name,
+        arguments,
+        canonical_arguments,
+    })
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonicalize_json(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        scalar => scalar,
     }
 }
 
@@ -255,6 +333,8 @@ pub enum AgentTurnError {
     ToolCallLimit,
     #[error("agent turn state is unavailable")]
     State,
+    #[error("invalid model response: {0}")]
+    Protocol(String),
 }
 
 impl IntoResponse for AgentTurnError {
@@ -264,7 +344,7 @@ impl IntoResponse for AgentTurnError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             Self::Missing | Self::Mismatch | Self::Expired => StatusCode::CONFLICT,
-            Self::State => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::State | Self::Protocol(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error": self.to_string()}))).into_response()
     }
@@ -412,5 +492,54 @@ mod tests {
             registry.active(turn.turn_id()),
             Err(AgentTurnError::Expired)
         ));
+    }
+
+    #[tokio::test]
+    async fn response_tool_calls_replace_pending_calls_with_canonical_arguments() {
+        let registry =
+            AgentTurnRegistry::with_durations(Duration::from_secs(1), Duration::from_secs(1));
+        let (_temp, workspace) = workspace().await;
+        let turn = registry
+            .begin(workspace, "a".into(), "purpose".into(), "token".into())
+            .await
+            .expect("turn");
+        registry
+            .replace_pending_tool_calls(
+                turn.turn_id(),
+                &json!({
+                    "choices": [{"message": {"tool_calls": [{
+                        "function": {
+                            "name": "mcp__pru__get_client_summary",
+                            "arguments": "{\"b\":2,\"a\":1}"
+                        }
+                    }]}}]
+                }),
+            )
+            .expect("pending calls");
+        let snapshot = registry.active(turn.turn_id()).expect("active turn");
+        assert_eq!(snapshot.pending_tool_calls.len(), 1);
+        assert_eq!(snapshot.pending_tool_calls[0].name, "get_client_summary");
+        assert_eq!(
+            snapshot.pending_tool_calls[0].arguments,
+            json!({"a": 1, "b": 2})
+        );
+        assert_eq!(
+            snapshot.pending_tool_calls[0].canonical_arguments,
+            r#"{"a":1,"b":2}"#
+        );
+
+        registry
+            .replace_pending_tool_calls(
+                turn.turn_id(),
+                &json!({"choices": [{"message": {"content": "done"}}]}),
+            )
+            .expect("clear pending calls");
+        assert!(
+            registry
+                .active(turn.turn_id())
+                .expect("active turn")
+                .pending_tool_calls
+                .is_empty()
+        );
     }
 }

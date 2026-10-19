@@ -4,6 +4,7 @@ use pru_consent::ConsentAuthority;
 use pru_gateway::{
     GatewayConfig, GatewayState,
     agent::AgentCredential,
+    agent_api::agent_router,
     api::{ApiState, api_router},
     router,
 };
@@ -58,7 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_state =
         ApiState::with_agent_credential(gateway.clone(), authority, data_root, agent_credential);
     let _workspace_cleanup = api_state.start_workspace_cleanup();
-    let app = api_router(api_state).merge(router(gateway));
+    let app = api_router(api_state.clone())
+        .merge(agent_router(api_state))
+        .merge(router(gateway));
     let bind = env::var("PRU_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, app).await?;
