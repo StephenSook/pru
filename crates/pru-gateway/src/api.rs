@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::agent::{AgentCredential, AgentTurnRegistry};
 use crate::chat::{ChatRequest, ChatResponse, run_chat};
 use crate::limits::{CLIENT_IP_HEADER, LimitError, RequestRateLimiter};
 use crate::workspace::{WORKSPACE_HEADER, WorkspaceContext, WorkspaceError, WorkspaceManager};
@@ -36,23 +37,47 @@ pub struct ApiState {
     workspaces: WorkspaceManager,
     request_rates: RequestRateLimiter,
     storage_lock: Arc<Mutex<()>>,
+    agent_turns: AgentTurnRegistry,
+    agent_credential: AgentCredential,
 }
 
 impl ApiState {
     #[must_use]
     pub fn new(gateway: GatewayState, authority: ConsentAuthority, data_root: PathBuf) -> Self {
+        Self::with_agent_credential(gateway, authority, data_root, AgentCredential::generate())
+    }
+
+    #[must_use]
+    pub fn with_agent_credential(
+        gateway: GatewayState,
+        authority: ConsentAuthority,
+        data_root: PathBuf,
+        agent_credential: AgentCredential,
+    ) -> Self {
         Self {
             gateway,
             authority: Arc::new(authority),
             workspaces: WorkspaceManager::new(data_root),
             request_rates: RequestRateLimiter::new(),
             storage_lock: Arc::new(Mutex::new(())),
+            agent_turns: AgentTurnRegistry::new(),
+            agent_credential,
         }
     }
 
     #[must_use]
     pub fn gateway(&self) -> &GatewayState {
         &self.gateway
+    }
+
+    #[must_use]
+    pub fn agent_turns(&self) -> &AgentTurnRegistry {
+        &self.agent_turns
+    }
+
+    #[must_use]
+    pub fn agent_credential(&self) -> &AgentCredential {
+        &self.agent_credential
     }
 
     pub fn reset_demo(

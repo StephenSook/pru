@@ -27,6 +27,7 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
+pub mod agent;
 pub mod api;
 pub mod chat;
 pub mod limits;
@@ -101,6 +102,8 @@ pub struct ActionRequest {
     #[serde(default)]
     pub recipient: Option<String>,
     pub arguments: Value,
+    #[serde(skip)]
+    ledger_context: Option<agent::LedgerContext>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -188,19 +191,25 @@ impl IntoResponse for GatewayError {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct LedgerEntry<'a> {
+#[derive(Debug, Deserialize, Serialize)]
+struct LedgerEntry {
     id: Uuid,
     at: DateTime<Utc>,
-    client_id: &'a str,
-    action: &'a str,
-    decision: &'a str,
-    route: &'a str,
-    policy_reason: &'a str,
+    client_id: String,
+    action: String,
+    decision: String,
+    route: String,
+    policy_reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    model_id: Option<&'a str>,
+    model_id: Option<String>,
     contains_ssn: bool,
     span_hashes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
 }
 
 struct LedgerDecision<'a> {
@@ -288,14 +297,26 @@ impl EgressLedger {
         let entry = LedgerEntry {
             id,
             at,
-            client_id: &request.client_id,
-            action: decision.action.name(),
-            decision: decision.outcome,
-            route: decision.route,
-            policy_reason: decision.policy_reason,
-            model_id: decision.model_id,
+            client_id: request.client_id.clone(),
+            action: decision.action.name().to_owned(),
+            decision: decision.outcome.to_owned(),
+            route: decision.route.to_owned(),
+            policy_reason: decision.policy_reason.to_owned(),
+            model_id: decision.model_id.map(str::to_owned),
             contains_ssn: !decision.spans.is_empty(),
             span_hashes,
+            turn_id: request
+                .ledger_context
+                .as_ref()
+                .map(|context| context.turn_id),
+            actor: request
+                .ledger_context
+                .as_ref()
+                .map(|context| context.actor.clone()),
+            step: request
+                .ledger_context
+                .as_ref()
+                .map(|context| context.step.clone()),
         };
         let path = self.path_for(request.workspace_id.as_deref(), &request.client_id)?;
         if let Some(parent) = path.parent() {
@@ -971,5 +992,69 @@ mod admission_tests {
             .await
             .expect_err("still busy");
         assert!(matches!(error, GatewayError::LocalModelBusy));
+    }
+}
+
+#[cfg(test)]
+mod ledger_context_tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn agent_rows_carry_context_and_legacy_rows_still_parse() {
+        let temp = TempDir::new().expect("temp directory");
+        let path = temp.path().join("ledger.jsonl");
+        let ledger = EgressLedger::new(&path, None, [23; 32]).expect("ledger");
+        let turn_id = Uuid::new_v4();
+        let request = ActionRequest {
+            client_id: "synthetic-client".to_owned(),
+            workspace_id: None,
+            consent_token: "synthetic-token".to_owned(),
+            purpose: "test ledger context".to_owned(),
+            recipient: None,
+            arguments: json!({"message": "test"}),
+            ledger_context: Some(agent::LedgerContext {
+                turn_id,
+                actor: "hermes".to_owned(),
+                step: "model".to_owned(),
+            }),
+        };
+        ledger
+            .append(
+                Utc::now(),
+                &request,
+                LedgerDecision {
+                    action: GatewayAction::ChatComplete,
+                    outcome: "permit",
+                    route: "token_factory",
+                    policy_reason: "cedar_allow",
+                    model_id: Some(TOKEN_FACTORY_MODEL),
+                    spans: &[],
+                },
+            )
+            .expect("append ledger row");
+        let row: LedgerEntry =
+            serde_json::from_str(std::fs::read_to_string(&path).expect("ledger body").trim())
+                .expect("agent ledger row");
+        assert_eq!(row.turn_id, Some(turn_id));
+        assert_eq!(row.actor.as_deref(), Some("hermes"));
+        assert_eq!(row.step.as_deref(), Some("model"));
+
+        let legacy = json!({
+            "id": Uuid::new_v4(),
+            "at": Utc::now(),
+            "client_id": "synthetic-client",
+            "action": "chat_model",
+            "decision": "permit",
+            "route": "local",
+            "policy_reason": "cedar_allow",
+            "contains_ssn": false,
+            "span_hashes": []
+        });
+        let legacy: LedgerEntry = serde_json::from_value(legacy).expect("legacy ledger row");
+        assert!(legacy.turn_id.is_none());
+        assert!(legacy.actor.is_none());
+        assert!(legacy.step.is_none());
     }
 }

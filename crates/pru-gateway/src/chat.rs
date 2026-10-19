@@ -124,6 +124,7 @@ pub async fn run_chat(
             purpose,
             recipient: None,
             arguments: body,
+            ledger_context: None,
         };
         let action = match state
             .gateway()
@@ -326,6 +327,7 @@ async fn execute_tool(
         purpose,
         recipient: Some(recipient),
         arguments: action_arguments,
+        ledger_context: None,
     };
     match state.gateway().execute_action(action_name, request).await {
         Ok(action) => Ok(ChatStep {

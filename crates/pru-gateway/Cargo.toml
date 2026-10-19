@@ -9,11 +9,13 @@ rust-version.workspace = true
 axum.workspace = true
 blake3.workspace = true
 chrono.workspace = true
+constant_time_eq.workspace = true
 hex.workspace = true
 pru-consent = { path = "../pru-consent" }
 pru-policy = { path = "../pru-policy" }
 pru-ssn = { path = "../pru-ssn" }
 reqwest.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
