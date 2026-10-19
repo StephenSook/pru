@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+# Visitor workspaces hold test client records. Files the gateway writes are
+# readable by their owner only, so another user in the container cannot read them.
+umask 077
+if [ -n "${PRU_DATA_DIR:-}" ]; then
+  mkdir -p "${PRU_DATA_DIR}"
+  chmod 0700 "${PRU_DATA_DIR}"
+fi
+
 if [ -z "${NEBIUS_API_KEY:-}" ]; then
   echo "Token Factory disabled"
 fi
