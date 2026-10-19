@@ -37,8 +37,10 @@ use limits::{LimitError, TokenBudget, TokenReservation};
 pub const TOKEN_FACTORY_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
+// A second visitor's local turn waits this long for the one CPU model instead of failing at once.
+pub const LOCAL_QUEUE_WAIT_SECS: u64 = 90;
 pub const LOCAL_MODEL_BUSY_MESSAGE: &str =
-    "The public demo's local model is busy. Please wait for the current generation to finish.";
+    "The public demo's local model stayed busy for 90 seconds. Please try again in a minute.";
 pub const NO_ACTIVE_CONSENT_REASON: &str = "no_active_consent";
 pub const NO_ACTIVE_CONSENT_MESSAGE: &str =
     "Pru has no active consent for this client. Mint a use consent before asking.";
@@ -643,7 +645,7 @@ async fn execute_gateway_action(
         return Err(GatewayError::TokenFactoryNotConfigured);
     }
 
-    let admission = match acquire_model_admission(state, action, route, now) {
+    let admission = match acquire_model_admission(state, action, route, now).await {
         Ok(admission) => admission,
         Err(error) => {
             let reason = error.to_string();
@@ -720,7 +722,7 @@ enum ModelAdmission {
     Hosted(TokenReservation),
 }
 
-fn acquire_model_admission(
+async fn acquire_model_admission(
     state: &GatewayState,
     action: GatewayAction,
     route: &str,
@@ -733,15 +735,27 @@ fn acquire_model_admission(
         return Ok(None);
     }
     if route == "local" {
-        let permit = Arc::clone(&state.inner.local_generation_slots)
-            .try_acquire_owned()
-            .map_err(|_| GatewayError::LocalModelBusy)?;
+        let permit = wait_for_local_slot(
+            Arc::clone(&state.inner.local_generation_slots),
+            std::time::Duration::from_secs(LOCAL_QUEUE_WAIT_SECS),
+        )
+        .await?;
         Ok(Some(ModelAdmission::Local(permit)))
     } else {
         Ok(Some(ModelAdmission::Hosted(
             state.inner.token_budget.reserve(now)?,
         )))
     }
+}
+
+async fn wait_for_local_slot(
+    slots: Arc<Semaphore>,
+    wait: std::time::Duration,
+) -> Result<OwnedSemaphorePermit, GatewayError> {
+    tokio::time::timeout(wait, slots.acquire_owned())
+        .await
+        .map_err(|_| GatewayError::LocalModelBusy)?
+        .map_err(|_| GatewayError::LocalModelBusy)
 }
 
 fn append_ledger(
@@ -931,5 +945,31 @@ mod admission_tests {
         drop(first);
         assert!(Arc::clone(&slots).try_acquire_owned().is_ok());
         assert_eq!(MAX_CONCURRENT_LOCAL_GENERATIONS, 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_local_turn_waits_for_the_slot_instead_of_failing() {
+        let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_LOCAL_GENERATIONS));
+        let first = Arc::clone(&slots)
+            .try_acquire_owned()
+            .expect("first permit");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(first);
+        });
+        let second =
+            wait_for_local_slot(Arc::clone(&slots), std::time::Duration::from_secs(5)).await;
+        assert!(second.is_ok());
+        release.await.expect("release task");
+    }
+
+    #[tokio::test]
+    async fn a_local_turn_gives_up_with_busy_after_the_wait() {
+        let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_LOCAL_GENERATIONS));
+        let _held = Arc::clone(&slots).try_acquire_owned().expect("held permit");
+        let error = wait_for_local_slot(Arc::clone(&slots), std::time::Duration::from_millis(30))
+            .await
+            .expect_err("still busy");
+        assert!(matches!(error, GatewayError::LocalModelBusy));
     }
 }
