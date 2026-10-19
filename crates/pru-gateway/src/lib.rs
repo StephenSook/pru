@@ -39,6 +39,9 @@ pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
 pub const LOCAL_MODEL_BUSY_MESSAGE: &str =
     "The public demo's local model is busy. Please wait for the current generation to finish.";
+pub const TOKEN_FACTORY_NOT_CONFIGURED_REASON: &str = "token_factory_not_configured";
+pub const TOKEN_FACTORY_NOT_CONFIGURED_MESSAGE: &str =
+    "Token Factory is disabled because this build has no NEBIUS_API_KEY.";
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -64,7 +67,7 @@ pub struct GatewayConfig {
     pub local_model: String,
     pub local_api_key: Option<String>,
     pub token_factory_base_url: String,
-    pub nebius_api_key: String,
+    pub nebius_api_key: Option<String>,
     pub ledger_path: PathBuf,
     pub client_data_root: Option<PathBuf>,
     pub ledger_hash_key: [u8; 32],
@@ -156,6 +159,8 @@ pub enum GatewayError {
     Limit(#[from] LimitError),
     #[error("{LOCAL_MODEL_BUSY_MESSAGE}")]
     LocalModelBusy,
+    #[error("{TOKEN_FACTORY_NOT_CONFIGURED_MESSAGE}")]
+    TokenFactoryNotConfigured,
 }
 
 impl IntoResponse for GatewayError {
@@ -164,6 +169,7 @@ impl IntoResponse for GatewayError {
             Self::UnknownAction(_) => StatusCode::NOT_FOUND,
             Self::Consent(_) | Self::PolicyDenied(_) => StatusCode::FORBIDDEN,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+            Self::TokenFactoryNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             Self::Limit(LimitError::IpRate | LimitError::WorkspaceRate)
             | Self::Limit(LimitError::TokenBudget)
             | Self::LocalModelBusy => StatusCode::TOO_MANY_REQUESTS,
@@ -601,6 +607,23 @@ async fn execute_gateway_action(
         return Err(GatewayError::PolicyDenied(diagnostics));
     }
 
+    if route == "token_factory" && state.inner.config.nebius_api_key.is_none() {
+        append_ledger(
+            state,
+            now,
+            &request,
+            LedgerDecision {
+                action,
+                outcome: "deny",
+                route,
+                policy_reason: TOKEN_FACTORY_NOT_CONFIGURED_REASON,
+                model_id: model_for(state, action, route),
+                spans: &spans,
+            },
+        )?;
+        return Err(GatewayError::TokenFactoryNotConfigured);
+    }
+
     let admission = match acquire_model_admission(state, action, route, now) {
         Ok(admission) => admission,
         Err(error) => {
@@ -742,7 +765,7 @@ async fn call_llm(
         (
             &state.inner.config.token_factory_base_url,
             TOKEN_FACTORY_MODEL,
-            Some(state.inner.config.nebius_api_key.as_str()),
+            state.inner.config.nebius_api_key.as_deref(),
         )
     };
     body["model"] = Value::String(model.to_owned());

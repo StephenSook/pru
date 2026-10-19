@@ -2,8 +2,7 @@
 set -eu
 
 if [ -z "${NEBIUS_API_KEY:-}" ]; then
-  echo "NEBIUS_API_KEY is required" >&2
-  exit 1
+  echo "Token Factory disabled"
 fi
 
 if [ -z "${PRU_LEDGER_HASH_KEY:-}" ]; then

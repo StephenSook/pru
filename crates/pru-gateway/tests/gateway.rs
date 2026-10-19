@@ -13,7 +13,8 @@ use axum::{
 use chrono::{DateTime, TimeZone, Utc};
 use pru_consent::{ConsentAuthority, ConsentKind, ConsentRecord, RevocationList};
 use pru_gateway::{
-    ActionResponse, Clock, GatewayConfig, GatewayState, TOKEN_FACTORY_RECIPIENT, router,
+    ActionResponse, Clock, GatewayConfig, GatewayState, TOKEN_FACTORY_NOT_CONFIGURED_MESSAGE,
+    TOKEN_FACTORY_NOT_CONFIGURED_REASON, TOKEN_FACTORY_RECIPIENT, router,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -75,6 +76,14 @@ async fn stub_upstream() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
 }
 
 async fn harness(kind: ConsentKind, recipient: Option<&str>) -> (Harness, String) {
+    harness_with_key(kind, recipient, Some("synthetic-nebius-key".to_owned())).await
+}
+
+async fn harness_with_key(
+    kind: ConsentKind,
+    recipient: Option<&str>,
+    nebius_api_key: Option<String>,
+) -> (Harness, String) {
     let (local_url, local_calls, local_task) = stub_upstream().await;
     let (remote_url, remote_calls, remote_task) = stub_upstream().await;
     let temp = TempDir::new().expect("temp directory");
@@ -101,7 +110,7 @@ async fn harness(kind: ConsentKind, recipient: Option<&str>) -> (Harness, String
         local_model: "nemotron-3-nano-4b".to_owned(),
         local_api_key: Some("synthetic-local-key".to_owned()),
         token_factory_base_url: remote_url,
-        nebius_api_key: "synthetic-nebius-key".to_owned(),
+        nebius_api_key,
         ledger_path: ledger_path.clone(),
         client_data_root: None,
         ledger_hash_key: [7; 32],
@@ -251,6 +260,46 @@ async fn ssn_free_prompt_with_disclosure_consent_routes_to_token_factory() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["model"], "nvidia/Nemotron-3_5-Lightning");
     assert_eq!(calls[0]["chat_template_kwargs"]["enable_thinking"], false);
+}
+
+#[tokio::test]
+async fn missing_key_keeps_local_available_and_refuses_token_factory_before_network_contact() {
+    let (local_harness, local_token) = harness_with_key(ConsentKind::Use, None, None).await;
+    let (local_status, local_body) = call(
+        &local_harness.app,
+        "llm_complete",
+        action_body(&local_token, "Synthetic canary SSN 900-12-3456."),
+    )
+    .await;
+    assert_eq!(local_status, StatusCode::OK, "{local_body}");
+    assert_eq!(local_body["route"], "local");
+    assert_eq!(
+        local_harness.local_calls.lock().expect("local calls").len(),
+        1
+    );
+
+    let (hosted_harness, hosted_token) =
+        harness_with_key(ConsentKind::Disclose, Some(TOKEN_FACTORY_RECIPIENT), None).await;
+    let (hosted_status, hosted_body) = call(
+        &hosted_harness.app,
+        "llm_complete",
+        action_body(&hosted_token, "This is synthetic. What is 17 plus 23?"),
+    )
+    .await;
+    assert_eq!(hosted_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(hosted_body["error"], TOKEN_FACTORY_NOT_CONFIGURED_MESSAGE);
+    assert!(
+        hosted_harness
+            .remote_calls
+            .lock()
+            .expect("remote calls")
+            .is_empty()
+    );
+    let ledger = read_ledger(&hosted_harness.ledger_path);
+    let entry: Value = serde_json::from_str(ledger.trim()).expect("ledger entry");
+    assert_eq!(entry["decision"], "deny");
+    assert_eq!(entry["route"], "token_factory");
+    assert_eq!(entry["policy_reason"], TOKEN_FACTORY_NOT_CONFIGURED_REASON);
 }
 
 #[tokio::test]
