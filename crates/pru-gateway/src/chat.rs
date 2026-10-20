@@ -688,7 +688,7 @@ fn model_cost(route: &str, input_tokens: u64, output_tokens: u64) -> f64 {
     if route == "local" {
         0.0
     } else {
-        (input_tokens as f64 * 0.06 + output_tokens as f64 * 0.24) / 1_000_000.0
+        (input_tokens as f64 * 0.30 + output_tokens as f64 * 0.90) / 1_000_000.0
     }
 }
 
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn local_route_has_zero_cost_and_remote_route_uses_list_prices() {
         assert_eq!(model_cost("local", 1_000, 1_000), 0.0);
-        assert!((model_cost("token_factory", 1_000_000, 1_000_000) - 0.30).abs() < f64::EPSILON);
+        assert!((model_cost("token_factory", 1_000_000, 1_000_000) - 1.20).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -775,6 +775,9 @@ mod tests {
 
     #[test]
     fn token_factory_model_constant_matches_the_costed_model() {
-        assert_eq!(crate::TOKEN_FACTORY_MODEL, "nvidia/Nemotron-3_5-Lightning");
+        assert_eq!(
+            crate::TOKEN_FACTORY_MODEL,
+            "nvidia/nemotron-3-super-120b-a12b"
+        );
     }
 }

@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
                 "id": "chatcmpl-pru-smoke",
                 "object": "chat.completion",
                 "created": 1_792_387_200,
-                "model": "nvidia/Nemotron-3_5-Lightning",
+                "model": "nvidia/nemotron-3-super-120b-a12b",
                 "choices": [
                     {
                         "index": 0,

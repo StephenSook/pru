@@ -399,7 +399,7 @@ async fn body_is_normalized_budget_reconciles_and_tool_call_becomes_pending() {
 }
 
 #[tokio::test]
-async fn models_lists_only_the_pinned_lightning_model() {
+async fn models_lists_only_the_selected_token_factory_model() {
     let harness = harness().await;
     let (status, body) = request(
         &harness.app,

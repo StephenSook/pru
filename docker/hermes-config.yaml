@@ -1,7 +1,7 @@
 _config_version: 12
 model:
   provider: pru
-  default: nvidia/Nemotron-3_5-Lightning
+  default: nvidia/nemotron-3-super-120b-a12b
   streaming: false
   context_length: 131072
 providers:
