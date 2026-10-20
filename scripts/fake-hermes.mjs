@@ -128,6 +128,11 @@ async function runSession(turnId, input) {
         name,
         arguments: argumentsValue,
       }, 3 + iteration);
+      const structured = tool.result?.structuredContent;
+      if (structured !== undefined
+        && (structured === null || Array.isArray(structured) || typeof structured !== "object")) {
+        throw new Error("MCP 2025-11-25 structuredContent must be an object");
+      }
       messages.push({
         role: "tool",
         tool_call_id: call.id,

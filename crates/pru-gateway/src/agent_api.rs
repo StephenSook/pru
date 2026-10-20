@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::{
-    ActionRequest, GatewayError, TOKEN_FACTORY_MODEL,
+    ActionRequest, GatewayError,
     agent::{AgentTurnError, LedgerContext},
     api::ApiState,
 };
@@ -33,7 +33,7 @@ async fn models(State(state): State<ApiState>, request: Request) -> Response {
     Json(json!({
         "object": "list",
         "data": [{
-            "id": TOKEN_FACTORY_MODEL,
+            "id": state.gateway().token_factory_model(),
             "object": "model",
             "owned_by": "pru",
             "context_length": 131_072
@@ -73,6 +73,12 @@ async fn chat_completions(State(state): State<ApiState>, request: Request) -> Re
     let body = match serde_json::from_slice::<Value>(&body) {
         Ok(body) => body,
         Err(error) => {
+            tracing::warn!(
+                %turn_id,
+                failure = "invalid_json",
+                parse_error = %error,
+                "refused Hermes agent model request"
+            );
             return openai_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_json",
@@ -80,9 +86,20 @@ async fn chat_completions(State(state): State<ApiState>, request: Request) -> Re
             );
         }
     };
-    let arguments = match normalize_body(&body) {
+    tracing::debug!(
+        %turn_id,
+        request_shape = %request_shape(&body),
+        "received Hermes agent model request"
+    );
+    let arguments = match normalize_body(&body, state.gateway().token_factory_model()) {
         Ok(arguments) => arguments,
         Err(message) => {
+            tracing::warn!(
+                %turn_id,
+                request_shape = %request_shape(&body),
+                failure = "invalid_request_shape",
+                "refused Hermes agent model request"
+            );
             return openai_error(StatusCode::BAD_REQUEST, "invalid_request", message);
         }
     };
@@ -108,6 +125,12 @@ async fn chat_completions(State(state): State<ApiState>, request: Request) -> Re
                 .agent_turns()
                 .replace_pending_tool_calls(turn_id, &result)
             {
+                tracing::warn!(
+                    %turn_id,
+                    response_shape = %request_shape(&result),
+                    failure = "invalid_upstream_tool_call",
+                    "refused Token Factory response for Hermes"
+                );
                 return agent_turn_error(error);
             }
             Json(result).into_response()
@@ -149,7 +172,7 @@ fn turn_id(request: &Request) -> Option<Uuid> {
         .and_then(|value| Uuid::parse_str(value).ok())
 }
 
-fn normalize_body(body: &Value) -> Result<Value, &'static str> {
+fn normalize_body(body: &Value, model: &str) -> Result<Value, &'static str> {
     let object = body
         .as_object()
         .ok_or("The request body must be a JSON object.")?;
@@ -175,11 +198,83 @@ fn normalize_body(body: &Value) -> Result<Value, &'static str> {
         "chat_template_kwargs".to_owned(),
         json!({"enable_thinking": false}),
     );
-    normalized.insert(
-        "model".to_owned(),
-        Value::String(TOKEN_FACTORY_MODEL.to_owned()),
-    );
+    normalized.insert("model".to_owned(), Value::String(model.to_owned()));
     Ok(Value::Object(normalized))
+}
+
+fn request_shape(body: &Value) -> Value {
+    let Some(object) = body.as_object() else {
+        return json!({"type": json_type(body)});
+    };
+    let messages = object.get("messages").map_or_else(
+        || json!({"type": "missing"}),
+        |value| match value.as_array() {
+            Some(messages) => Value::Array(
+                messages
+                    .iter()
+                    .map(|message| {
+                        let Some(message) = message.as_object() else {
+                            return json!({"type": json_type(message)});
+                        };
+                        let tool_calls = message.get("tool_calls").map_or_else(
+                            || json!({"type": "missing"}),
+                            |calls| match calls.as_array() {
+                                Some(calls) => Value::Array(
+                                    calls
+                                        .iter()
+                                        .map(|call| {
+                                            let function =
+                                                call.get("function").and_then(Value::as_object);
+                                            json!({
+                                                "name": function
+                                                    .and_then(|value| value.get("name"))
+                                                    .and_then(Value::as_str),
+                                                "arguments": function
+                                                    .and_then(|value| value.get("arguments"))
+                                                    .map(json_type)
+                                                    .unwrap_or("missing")
+                                            })
+                                        })
+                                        .collect(),
+                                ),
+                                None => json!({"type": json_type(calls)}),
+                            },
+                        );
+                        json!({
+                            "role": message.get("role").and_then(Value::as_str),
+                            "content": message
+                                .get("content")
+                                .map(json_type)
+                                .unwrap_or("missing"),
+                            "tool_call_id": message.contains_key("tool_call_id"),
+                            "tool_calls": tool_calls
+                        })
+                    })
+                    .collect(),
+            ),
+            None => json!({"type": json_type(value)}),
+        },
+    );
+    json!({
+        "fields": object.keys().collect::<Vec<_>>(),
+        "messages": messages,
+        "tools": object.get("tools").map(json_type).unwrap_or("missing"),
+        "tool_choice": object
+            .get("tool_choice")
+            .map(json_type)
+            .unwrap_or("missing")
+    })
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn gateway_error(error: GatewayError) -> Response {
@@ -228,25 +323,65 @@ mod tests {
 
     #[test]
     fn normalization_keeps_only_the_supported_request_fields() {
-        let normalized = normalize_body(&json!({
-            "messages": [{"role": "user", "content": "hello"}],
-            "tools": [{"type": "function"}],
-            "tool_choice": "auto",
-            "max_tokens": 900,
-            "temperature": 0.8,
-            "reasoning_effort": "medium",
-            "stream": true,
-            "user": "discard-me"
-        }))
+        let normalized = normalize_body(
+            &json!({
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [{"type": "function"}],
+                "tool_choice": "auto",
+                "max_tokens": 900,
+                "temperature": 0.8,
+                "reasoning_effort": "medium",
+                "stream": true,
+                "user": "discard-me"
+            }),
+            crate::TOKEN_FACTORY_MODEL,
+        )
         .expect("normalized body");
         assert_eq!(normalized["max_tokens"], 600);
         assert_eq!(normalized["temperature"], 0);
         assert_eq!(normalized["chat_template_kwargs"]["enable_thinking"], false);
-        assert_eq!(normalized["model"], TOKEN_FACTORY_MODEL);
+        assert_eq!(normalized["model"], crate::TOKEN_FACTORY_MODEL);
         assert!(normalized.get("tools").is_some());
         assert!(normalized.get("tool_choice").is_some());
         assert!(normalized.get("reasoning_effort").is_none());
         assert!(normalized.get("stream").is_none());
         assert!(normalized.get("user").is_none());
+    }
+
+    #[test]
+    fn request_shape_omits_message_tool_and_identifier_values() {
+        let shape = request_shape(&json!({
+            "messages": [
+                {"role": "user", "content": "synthetic SSN 900-12-3456"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "private-call-id",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__pru__read_document",
+                            "arguments": "{\"name\":\"private-document-value\"}"
+                        }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "private-call-id",
+                    "content": "private tool output"
+                }
+            ],
+            "tools": []
+        }));
+        let encoded = serde_json::to_string(&shape).expect("shape JSON");
+        assert!(encoded.contains("mcp__pru__read_document"));
+        for private_value in [
+            "900-12-3456",
+            "private-call-id",
+            "private-document-value",
+            "private tool output",
+        ] {
+            assert!(!encoded.contains(private_value), "leaked {private_value}");
+        }
     }
 }

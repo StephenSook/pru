@@ -133,6 +133,7 @@ async fn harness() -> Harness {
             local_model: "nemotron-3-nano-4b".to_owned(),
             local_api_key: None,
             token_factory_base_url: "http://127.0.0.1:9/v1".to_owned(),
+            token_factory_model: Default::default(),
             nebius_api_key: Some("synthetic-nebius-key".to_owned()),
             ledger_path: temp.path().join("legacy.jsonl"),
             client_data_root: Some(root.clone()),
@@ -286,6 +287,16 @@ async fn tools_list_names_exactly_the_seven_pru_tools() {
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();
     assert_eq!(names, MCP_TOOL_NAMES);
+    let read_document = body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "read_document")
+        .expect("read_document tool");
+    assert_eq!(
+        read_document["inputSchema"]["properties"]["name"]["const"],
+        "w2"
+    );
 }
 
 #[tokio::test]
@@ -324,6 +335,41 @@ async fn unmatched_tool_call_is_refused_without_a_row_or_side_effect() {
     assert_eq!(body["result"]["isError"], true);
     assert!(harness.ledger().is_empty());
     assert!(harness.notes().is_empty());
+}
+
+#[tokio::test]
+async fn consent_state_has_the_object_structured_content_required_by_hermes() {
+    let harness = harness().await;
+    harness.seed_pending("get_consent_state", json!({}));
+    let body = call_tool(&harness.mcp, "get_consent_state", json!({})).await;
+
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert!(body["result"]["structuredContent"].is_object());
+    assert!(body["result"]["structuredContent"]["consents"].is_array());
+}
+
+#[tokio::test]
+async fn measured_w2_alias_is_accepted_but_unrelated_documents_stay_refused() {
+    let accepted = harness().await;
+    accepted.seed_pending("read_document", json!({"name": "W-2"}));
+    let body = call_tool(&accepted.mcp, "read_document", json!({"name": "W-2"})).await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert!(body["result"]["structuredContent"].is_object());
+    assert_eq!(accepted.ledger().len(), 1);
+    drop(accepted);
+
+    let refused = harness().await;
+    refused.seed_pending("read_document", json!({"name": "1099"}));
+    let body = call_tool(&refused.mcp, "read_document", json!({"name": "1099"})).await;
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    assert!(refused.ledger().is_empty());
+    assert!(matches!(
+        refused
+            .state
+            .agent_turns()
+            .reserve_model_call(refused.turn.turn_id()),
+        Err(AgentTurnError::Terminated)
+    ));
 }
 
 #[tokio::test]

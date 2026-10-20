@@ -110,6 +110,7 @@ async fn harness_with_key(
         local_model: "nemotron-3-nano-4b".to_owned(),
         local_api_key: Some("synthetic-local-key".to_owned()),
         token_factory_base_url: remote_url,
+        token_factory_model: Default::default(),
         nebius_api_key,
         ledger_path: ledger_path.clone(),
         client_data_root: None,

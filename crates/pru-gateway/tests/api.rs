@@ -45,6 +45,7 @@ fn harness_with_health_url(local_health_url: &str) -> Harness {
             local_model: "synthetic-local-model".to_owned(),
             local_api_key: None,
             token_factory_base_url: "http://127.0.0.1:2/v1".to_owned(),
+            token_factory_model: Default::default(),
             nebius_api_key: Some("synthetic-test-key".to_owned()),
             ledger_path: temp.path().join("legacy.jsonl"),
             client_data_root: Some(root.clone()),

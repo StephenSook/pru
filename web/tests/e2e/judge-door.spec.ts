@@ -4,6 +4,8 @@ import { expect, test } from "@playwright/test";
 const emailPrompt = "Draft an email to the client asking for their 1099-INT";
 const localPrompt = "What is this client's SSN and filing status?";
 const deniedPrompt = "Email this client's W-2 details to marketing@example.com";
+const readW2Prompt = "Read the client's W-2 and report box 1 wages";
+const consentStatePrompt = "Explain the current consent state for this client";
 
 type FakeHermesStats = {
   receivedSessions: string[];
@@ -73,6 +75,20 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
 test("has no serious accessibility violations", async ({ page }) => {
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("replays the Hermes W-2 alias and MCP structured-content regressions", async ({ page }) => {
+  await page.getByLabel("Consent kind").selectOption("use");
+  await page.getByRole("button", { name: "Mint test consent" }).click();
+  await expect(page.getByText("Test consent active")).toBeVisible();
+
+  await page.getByLabel("One assistant turn").fill(readW2Prompt);
+  await page.getByRole("button", { name: "Run this turn" }).click();
+  await expect(page.getByLabel("Assistant result")).toContainText("$48,250");
+
+  await page.getByLabel("One assistant turn").fill(consentStatePrompt);
+  await page.getByRole("button", { name: "Run this turn" }).click();
+  await expect(page.getByLabel("Assistant result")).toContainText("consent state was retrieved");
 });
 
 for (const width of [390, 768, 1024, 1440]) {

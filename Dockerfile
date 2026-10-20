@@ -13,6 +13,7 @@ RUN rm -rf \
 
 FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /src
+ENV CARGO_BUILD_JOBS=2
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY crates ./crates
 RUN cargo build --locked --release -p pru-agent-jail -p pru-gateway
@@ -75,6 +76,7 @@ ENV NODE_ENV=production \
     PRU_DATA_DIR=/tmp/pru-data \
     PRU_AGENT=hermes \
     PRU_AGENT_REQUIRE_JAIL=1 \
+    PRU_TOKEN_FACTORY_MODEL=nvidia/nemotron-3-super-120b-a12b \
     PRU_HERMES_URL=http://127.0.0.1:8642 \
     HERMES_HOME=/tmp/hermes-home \
     HERMES_RUNTIME_DIR=/tmp/hermes \

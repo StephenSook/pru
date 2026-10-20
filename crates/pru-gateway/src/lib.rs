@@ -37,7 +37,9 @@ pub mod workspace;
 
 use limits::{LimitError, TokenBudget, TokenReservation};
 
-pub const TOKEN_FACTORY_MODEL: &str = "nvidia/nemotron-3-super-120b-a12b";
+pub const TOKEN_FACTORY_LIGHTNING_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
+pub const TOKEN_FACTORY_SUPER_MODEL: &str = "nvidia/nemotron-3-super-120b-a12b";
+pub const TOKEN_FACTORY_MODEL: &str = TOKEN_FACTORY_SUPER_MODEL;
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
 // A second visitor's local turn waits this long for the one CPU model instead of failing at once.
@@ -78,10 +80,46 @@ pub struct GatewayConfig {
     pub local_model: String,
     pub local_api_key: Option<String>,
     pub token_factory_base_url: String,
+    pub token_factory_model: TokenFactoryModel,
     pub nebius_api_key: Option<String>,
     pub ledger_path: PathBuf,
     pub client_data_root: Option<PathBuf>,
     pub ledger_hash_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TokenFactoryModel {
+    Lightning,
+    #[default]
+    Super,
+}
+
+impl TokenFactoryModel {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Lightning => TOKEN_FACTORY_LIGHTNING_MODEL,
+            Self::Super => TOKEN_FACTORY_SUPER_MODEL,
+        }
+    }
+
+    pub fn prices(self) -> (f64, f64) {
+        match self {
+            Self::Lightning => (0.06, 0.24),
+            Self::Super => (0.30, 0.90),
+        }
+    }
+}
+
+impl std::str::FromStr for TokenFactoryModel {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            TOKEN_FACTORY_LIGHTNING_MODEL => Ok(Self::Lightning),
+            TOKEN_FACTORY_SUPER_MODEL => Ok(Self::Super),
+            _ => Err("PRU_TOKEN_FACTORY_MODEL is not an evaluated model"),
+        }
+    }
 }
 
 pub trait Clock: Send + Sync {
@@ -507,6 +545,10 @@ impl GatewayState {
             .is_ok_and(|response| response.status().is_success())
     }
 
+    pub fn token_factory_model(&self) -> &'static str {
+        self.inner.config.token_factory_model.id()
+    }
+
     pub fn ledger_entries(&self, client_id: &str) -> Result<Vec<Value>, GatewayError> {
         self.ledger_entries_at(None, client_id)
     }
@@ -868,7 +910,7 @@ async fn execute_gateway_action(
                     LedgerCompletion {
                         action,
                         route,
-                        model_id: TOKEN_FACTORY_MODEL,
+                        model_id: state.token_factory_model(),
                         authorization_id: ledger_entry_id,
                         input_tokens: call.input_tokens,
                         output_tokens: call.output_tokens,
@@ -967,7 +1009,7 @@ fn model_for<'a>(state: &'a GatewayState, action: GatewayAction, route: &str) ->
             Some(&state.inner.config.local_model)
         }
         GatewayAction::LlmComplete | GatewayAction::ChatComplete | GatewayAction::AgentModel => {
-            Some(TOKEN_FACTORY_MODEL)
+            Some(state.token_factory_model())
         }
         GatewayAction::SendEmail | GatewayAction::CreateEvent | GatewayAction::AgentTool => None,
     }
@@ -988,7 +1030,7 @@ async fn call_llm(
     } else {
         (
             &state.inner.config.token_factory_base_url,
-            TOKEN_FACTORY_MODEL,
+            state.token_factory_model(),
             state.inner.config.nebius_api_key.as_deref(),
         )
     };

@@ -144,6 +144,7 @@ async fn harness() -> Harness {
             local_model: "nemotron-3-nano-4b".to_owned(),
             local_api_key: None,
             token_factory_base_url: upstream,
+            token_factory_model: Default::default(),
             nebius_api_key: Some("synthetic-nebius-key".to_owned()),
             ledger_path: temp.path().join("legacy.jsonl"),
             client_data_root: Some(root.clone()),
@@ -212,6 +213,64 @@ fn model_body(content: &str) -> Value {
         "reasoning_effort": "medium",
         "stream": true
     })
+}
+
+#[tokio::test]
+async fn hermes_tool_result_message_shape_is_forwarded_unchanged() {
+    let harness = harness().await;
+    let turn = harness.begin(harness.use_token.clone()).await;
+    let messages = json!([
+        {"role": "user", "content": "Read the client's W-2"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call-read-w2",
+                "type": "function",
+                "function": {
+                    "name": "mcp__pru__read_document",
+                    "arguments": "{\"name\":\"W-2\"}"
+                }
+            }]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-read-w2",
+            "content": "{\"structuredContent\":{\"box_1_wages\":48250}}"
+        }
+    ]);
+    let (status, body) = request(
+        &harness.app,
+        Method::POST,
+        "/agent/v1/chat/completions",
+        Some(SECRET),
+        Some(turn.turn_id()),
+        Some(json!({"messages": messages, "tools": [], "tool_choice": "auto"})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let calls = harness.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["messages"], messages);
+}
+
+#[tokio::test]
+async fn non_array_messages_remain_refused_without_upstream_contact() {
+    let harness = harness().await;
+    let turn = harness.begin(harness.use_token.clone()).await;
+    let (status, body) = request(
+        &harness.app,
+        Method::POST,
+        "/agent/v1/chat/completions",
+        Some(SECRET),
+        Some(turn.turn_id()),
+        Some(json!({"messages": {"role": "user", "content": "not an array"}})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(harness.calls.lock().expect("calls lock").is_empty());
 }
 
 #[tokio::test]

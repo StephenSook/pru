@@ -2,7 +2,7 @@ use std::{env, path::PathBuf};
 
 use pru_consent::ConsentAuthority;
 use pru_gateway::{
-    GatewayConfig, GatewayState,
+    GatewayConfig, GatewayState, TOKEN_FACTORY_MODEL, TokenFactoryModel,
     agent::AgentCredential,
     agent_api::agent_router,
     api::{ApiState, api_router},
@@ -43,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_api_key: env::var("PRU_LOCAL_LLM_API_KEY").ok(),
         token_factory_base_url: env::var("PRU_TOKEN_FACTORY_URL")
             .unwrap_or_else(|_| "https://api.tokenfactory.nebius.com/v1".to_owned()),
+        token_factory_model: env::var("PRU_TOKEN_FACTORY_MODEL")
+            .unwrap_or_else(|_| TOKEN_FACTORY_MODEL.to_owned())
+            .parse::<TokenFactoryModel>()?,
         nebius_api_key: env::var("NEBIUS_API_KEY")
             .ok()
             .filter(|key| !key.trim().is_empty()),

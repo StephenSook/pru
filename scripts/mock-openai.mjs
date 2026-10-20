@@ -36,6 +36,18 @@ function hermesMessage(messages, serialized) {
   const called = messages
     .flatMap((message) => message.tool_calls ?? [])
     .map((call) => call.function?.name);
+  if (serialized.includes("Read the client's W-2 and report box 1 wages")) {
+    if (!called.includes("mcp__pru__read_document")) {
+      return mcpToolCall("read_document", { name: "W-2" }, called.length);
+    }
+    return { role: "assistant", content: "W-2 box 1 wages: $48,250." };
+  }
+  if (serialized.includes("Explain the current consent state for this client")) {
+    if (!called.includes("mcp__pru__get_consent_state")) {
+      return mcpToolCall("get_consent_state", {}, called.length);
+    }
+    return { role: "assistant", content: "The active consent state was retrieved." };
+  }
   if (serialized.includes("What is this client's SSN")) {
     if (!called.includes("mcp__pru__ask_local_model")) {
       return mcpToolCall("ask_local_model", {

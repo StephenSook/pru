@@ -211,7 +211,12 @@ pub async fn run_chat(
             latency_ms: action.latency_ms,
             input_tokens,
             output_tokens,
-            cost_usd: model_cost(&action.route, input_tokens, output_tokens),
+            cost_usd: model_cost(
+                &action.route,
+                model_id.as_deref(),
+                input_tokens,
+                output_tokens,
+            ),
             decision: action.decision.clone(),
             policy_reason: action.policy_reason.clone(),
             ledger_entry_id: action.ledger_entry_id,
@@ -510,7 +515,12 @@ fn hermes_steps(
                     .map_or(0, u128::from),
                 input_tokens,
                 output_tokens,
-                cost_usd: model_cost(route, input_tokens, output_tokens),
+                cost_usd: model_cost(
+                    route,
+                    entry["model_id"].as_str(),
+                    input_tokens,
+                    output_tokens,
+                ),
                 decision: entry["decision"].as_str().unwrap_or("unknown").to_owned(),
                 policy_reason: entry["policy_reason"]
                     .as_str()
@@ -684,11 +694,15 @@ fn denied_step(
     })
 }
 
-fn model_cost(route: &str, input_tokens: u64, output_tokens: u64) -> f64 {
+fn model_cost(route: &str, model: Option<&str>, input_tokens: u64, output_tokens: u64) -> f64 {
     if route == "local" {
         0.0
     } else {
-        (input_tokens as f64 * 0.30 + output_tokens as f64 * 0.90) / 1_000_000.0
+        let (input_price, output_price) = model
+            .and_then(|model| model.parse::<crate::TokenFactoryModel>().ok())
+            .unwrap_or_default()
+            .prices();
+        (input_tokens as f64 * input_price + output_tokens as f64 * output_price) / 1_000_000.0
     }
 }
 
@@ -747,8 +761,27 @@ mod tests {
 
     #[test]
     fn local_route_has_zero_cost_and_remote_route_uses_list_prices() {
-        assert_eq!(model_cost("local", 1_000, 1_000), 0.0);
-        assert!((model_cost("token_factory", 1_000_000, 1_000_000) - 1.20).abs() < f64::EPSILON);
+        assert_eq!(model_cost("local", None, 1_000, 1_000), 0.0);
+        assert!(
+            (model_cost(
+                "token_factory",
+                Some(crate::TOKEN_FACTORY_SUPER_MODEL),
+                1_000_000,
+                1_000_000,
+            ) - 1.20)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (model_cost(
+                "token_factory",
+                Some(crate::TOKEN_FACTORY_LIGHTNING_MODEL),
+                1_000_000,
+                1_000_000,
+            ) - 0.30)
+                .abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]

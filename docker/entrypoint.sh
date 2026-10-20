@@ -13,6 +13,16 @@ if [ -z "${NEBIUS_API_KEY:-}" ]; then
   echo "Token Factory disabled"
 fi
 
+PRU_TOKEN_FACTORY_MODEL="${PRU_TOKEN_FACTORY_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
+case "${PRU_TOKEN_FACTORY_MODEL}" in
+  nvidia/Nemotron-3_5-Lightning|nvidia/nemotron-3-super-120b-a12b) ;;
+  *)
+    echo "PRU_TOKEN_FACTORY_MODEL is not an evaluated model" >&2
+    exit 1
+    ;;
+esac
+export PRU_TOKEN_FACTORY_MODEL
+
 if [ -z "${PRU_LEDGER_HASH_KEY:-}" ]; then
   PRU_LEDGER_HASH_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
   export PRU_LEDGER_HASH_KEY
@@ -81,7 +91,10 @@ export PRU_AGENT PRU_AGENT_LABEL PRU_AGENT_JAIL_STATUS
 
 if [ "${hermes_enabled}" = "1" ]; then
   install -d -m 0700 -o 10000 -g 10000 "${HERMES_HOME}" "${HERMES_RUNTIME_DIR}"
-  install -m 0600 -o 10000 -g 10000 /etc/pru/hermes-config.yaml "${HERMES_HOME}/config.yaml"
+  sed "s|^  default: .*$|  default: ${PRU_TOKEN_FACTORY_MODEL}|" \
+    /etc/pru/hermes-config.yaml > "${HERMES_HOME}/config.yaml"
+  chown 10000:10000 "${HERMES_HOME}/config.yaml"
+  chmod 0600 "${HERMES_HOME}/config.yaml"
 fi
 
 PRU_LOCAL_THREADS="${PRU_LOCAL_THREADS:-$(nproc)}"

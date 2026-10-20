@@ -109,17 +109,35 @@ impl ServerHandler for PruMcpServer {
         async move {
             let name = request.name.into_owned();
             let arguments = Value::Object(request.arguments.unwrap_or_default());
+            tracing::debug!(
+                tool = %name,
+                argument_shape = %json_shape(&arguments),
+                "received Hermes MCP tool call"
+            );
             let turn = match server
                 .state
                 .agent_turns()
                 .consume_pending_tool_call(&name, arguments.clone())
             {
                 Ok(turn) => turn,
-                Err(error) => return Ok(tool_error(error.to_string()).into()),
+                Err(error) => {
+                    tracing::warn!(
+                        tool = %name,
+                        argument_shape = %json_shape(&arguments),
+                        failure = "pending_tool_call_mismatch",
+                        "refused Hermes MCP tool call"
+                    );
+                    return Ok(tool_error(error.to_string()).into());
+                }
             };
             let result = match server.execute_tool(&turn, &name, arguments).await {
                 Ok(result) => match ensure_no_ssn(&result) {
                     Ok(()) => {
+                        tracing::debug!(
+                            tool = %name,
+                            result_shape = %json_shape(&result),
+                            "completed Hermes MCP tool call"
+                        );
                         let mut success = CallToolResult::success(vec![ContentBlock::text(
                             serde_json::to_string(&result)
                                 .unwrap_or_else(|_| "Tool result encoding failed".to_owned()),
@@ -128,11 +146,21 @@ impl ServerHandler for PruMcpServer {
                         success
                     }
                     Err(message) => {
+                        tracing::warn!(
+                            tool = %name,
+                            failure = "ssn_output_guard",
+                            "terminated Hermes turn after MCP tool refusal"
+                        );
                         let _ = server.state.agent_turns().terminate(turn.turn_id);
                         tool_error(message)
                     }
                 },
                 Err(message) => {
+                    tracing::warn!(
+                        tool = %name,
+                        failure = "tool_execution_refused",
+                        "terminated Hermes turn after MCP tool refusal"
+                    );
                     let _ = server.state.agent_turns().terminate(turn.turn_id);
                     tool_error(message)
                 }
@@ -181,8 +209,8 @@ impl PruMcpServer {
     async fn get_consent_state(&self, turn: &ActiveTurnSnapshot) -> Result<Value, String> {
         let consents = read_consents(&self.state, &turn.workspace, &turn.client_id)
             .map_err(|error| error.to_string())?;
-        let result = Value::Array(
-            consents
+        let result = json!({
+            "consents": consents
                 .iter()
                 .map(|consent| {
                     json!({
@@ -193,8 +221,8 @@ impl PruMcpServer {
                         "revoked": consent.revoked
                     })
                 })
-                .collect(),
-        );
+                .collect::<Vec<_>>()
+        });
         self.agent_use(turn, "get_consent_state", result, None)
             .await
             .map(|response| response.0)
@@ -205,9 +233,11 @@ impl PruMcpServer {
         turn: &ActiveTurnSnapshot,
         arguments: &Value,
     ) -> Result<Value, String> {
-        require_string(arguments, "name")
-            .filter(|name| *name == "w2")
-            .ok_or_else(|| "read_document supports only name=w2".to_owned())?;
+        let name = require_string(arguments, "name")
+            .ok_or_else(|| "read_document requires name=w2".to_owned())?;
+        if !matches!(name, "w2" | "W-2") {
+            return Err("read_document supports only name=w2".to_owned());
+        }
         let raw = self
             .state
             .read_w2_document(&turn.workspace, &turn.client_id)
@@ -442,6 +472,25 @@ fn require_string<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
     arguments.get(field).and_then(Value::as_str)
 }
 
+fn json_shape(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::String("null".to_owned()),
+        Value::Bool(_) => Value::String("boolean".to_owned()),
+        Value::Number(_) => Value::String("number".to_owned()),
+        Value::String(_) => Value::String("string".to_owned()),
+        Value::Array(values) => json!({
+            "type": "array",
+            "length": values.len()
+        }),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), json_shape(value)))
+                .collect(),
+        ),
+    }
+}
+
 fn tool_error(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
@@ -494,8 +543,8 @@ fn tool_definitions() -> Vec<Tool> {
         ),
         tool(
             "read_document",
-            "Read one redacted TEST DATA client document.",
-            object_schema(&["name"], &[("name", "string")]),
+            "Read the redacted TEST DATA W-2 document with name=w2.",
+            read_document_schema(),
             true,
         ),
         tool(
@@ -548,6 +597,20 @@ fn tool(
 
 fn empty_schema() -> Map<String, Value> {
     object_schema(&[], &[])
+}
+
+fn read_document_schema() -> Map<String, Value> {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+            "name": {"type": "string", "const": "w2"}
+        }
+    })
+    .as_object()
+    .cloned()
+    .expect("read_document schema is an object")
 }
 
 fn object_schema(required: &[&str], fields: &[(&str, &str)]) -> Map<String, Value> {
