@@ -1,7 +1,8 @@
 #![cfg(target_os = "linux")]
 
 use std::{
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
+    os::unix::net::UnixStream,
     path::PathBuf,
     process::Command,
 };
@@ -26,7 +27,7 @@ fn probe_reports_fully_enforced_abi_four_or_newer() {
     let abi = stdout
         .trim()
         .strip_prefix("landlock_abi=")
-        .and_then(|value| value.strip_suffix(" ruleset=fully_enforced"))
+        .and_then(|value| value.strip_suffix(" ruleset=fully_enforced seccomp=socket_filter"))
         .expect("probe output shape")
         .parse::<u8>()
         .expect("numeric Landlock ABI");
@@ -103,6 +104,16 @@ fn run_child() -> Result<()> {
         .expect_err("TCP connection to the denied port unexpectedly succeeded");
     ensure_permission_denied(&denied_connect, "denied TCP connection")?;
 
+    // Landlock names a port, not a host, and does not cover UDP, so the socket filter refuses
+    // datagram sockets outright: no DNS lookups and no UDP egress from inside the jail.
+    for bind in ["127.0.0.1:0", "[::1]:0"] {
+        let denied_udp =
+            UdpSocket::bind(bind).expect_err("UDP socket creation unexpectedly succeeded");
+        ensure_operation_not_permitted(&denied_udp, "denied UDP socket")?;
+    }
+    // Local Unix sockets stay available; Python's event loop needs a socket pair.
+    UnixStream::pair().context("Unix socket pair failed")?;
+
     std::fs::write(&allowed_file, b"allowed").context("allowed write failed")?;
     let denied_write = std::fs::write(&denied_file, b"denied")
         .expect_err("write outside the allowed directory unexpectedly succeeded");
@@ -114,6 +125,13 @@ fn run_child() -> Result<()> {
 
 fn read_env(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("missing {name}"))
+}
+
+fn ensure_operation_not_permitted(error: &std::io::Error, operation: &str) -> Result<()> {
+    if error.raw_os_error() != Some(1) {
+        bail!("{operation} returned {error:?}, expected EPERM")
+    }
+    Ok(())
 }
 
 fn ensure_permission_denied(error: &std::io::Error, operation: &str) -> Result<()> {

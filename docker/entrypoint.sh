@@ -68,7 +68,7 @@ case "${PRU_AGENT:-hermes}" in
         hermes_enabled=1
         hermes_jailed=1
         PRU_AGENT_LABEL="Hermes Agent v0.22.2 (Nous Research)"
-        PRU_AGENT_JAIL_STATUS="Landlock enforced (ABI ${jail_abi})"
+        PRU_AGENT_JAIL_STATUS="Landlock enforced (ABI ${jail_abi}) + seccomp socket filter"
       elif [ "${PRU_AGENT_REQUIRE_JAIL}" = "1" ]; then
         PRU_AGENT=builtin
         PRU_AGENT_LABEL="built-in Rust loop (Landlock unavailable)"

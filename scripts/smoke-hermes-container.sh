@@ -93,7 +93,7 @@ HEALTH_JSON="${health_json}" node <<'NODE'
 const health = JSON.parse(process.env.HEALTH_JSON);
 if (health.status !== "ready") throw new Error(`unexpected health: ${process.env.HEALTH_JSON}`);
 if (health.agent !== "Hermes Agent v0.22.2 (Nous Research)") throw new Error(`unexpected agent: ${health.agent}`);
-if (!/^Landlock enforced \(ABI [4-9][0-9]*\)$/.test(health.jail)) throw new Error(`unexpected jail: ${health.jail}`);
+if (!/^Landlock enforced \(ABI [4-9][0-9]*\) \+ seccomp socket filter$/.test(health.jail)) throw new Error(`unexpected jail: ${health.jail}`);
 NODE
 
 docker exec "${app}" curl --fail-with-body --silent --show-error \

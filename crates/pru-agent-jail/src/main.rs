@@ -69,17 +69,74 @@ fn run(_args: Args) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::{os::unix::process::CommandExt, process::Command};
+    use std::{collections::BTreeMap, os::unix::process::CommandExt, process::Command};
 
-    use anyhow::{Context, Result, ensure};
+    use anyhow::{Context, Result, anyhow, ensure};
     use landlock::{
         ABI, AccessFs, AccessNet, CompatLevel, Compatible, LandlockStatus, NetPort, Ruleset,
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, path_beneath_rules,
+    };
+    use seccompiler::{
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule, TargetArch,
     };
 
     use super::{Args, MINIMUM_ABI};
 
     const TARGET_ABI: ABI = ABI::V4;
+    // socket(2) type values; the low four bits hold the type, the rest are flags.
+    const SOCKET_TYPE_MASK: u64 = 0xf;
+    const DENIED_INET_TYPES: [u64; 4] = [
+        libc::SOCK_DGRAM as u64,
+        libc::SOCK_RAW as u64,
+        libc::SOCK_RDM as u64,
+        libc::SOCK_SEQPACKET as u64,
+    ];
+
+    // Landlock governs TCP connect and bind only, and its rules name a port, not a host. This
+    // filter closes what Landlock cannot: no UDP (so no DNS or other datagram egress), no raw or
+    // packet sockets, and no io_uring, whose socket operations would bypass a socket(2) filter.
+    // TCP stream sockets stay allowed and Landlock limits their connect to one port.
+    fn socket_filter() -> Result<BpfProgram> {
+        let mut socket_rules = Vec::new();
+        for domain in [libc::AF_INET as u64, libc::AF_INET6 as u64] {
+            for kind in DENIED_INET_TYPES {
+                socket_rules.push(SeccompRule::new(vec![
+                    SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, domain)?,
+                    SeccompCondition::new(
+                        1,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::MaskedEq(SOCKET_TYPE_MASK),
+                        kind,
+                    )?,
+                ])?);
+            }
+        }
+        socket_rules.push(SeccompRule::new(vec![SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Eq,
+            libc::AF_PACKET as u64,
+        )?])?);
+        let mut rules = BTreeMap::new();
+        rules.insert(libc::SYS_socket, socket_rules);
+        rules.insert(libc::SYS_io_uring_setup, Vec::new());
+        let arch = TargetArch::try_from(std::env::consts::ARCH)
+            .map_err(|error| anyhow!("unsupported seccomp architecture: {error:?}"))?;
+        let filter = SeccompFilter::new(
+            rules,
+            SeccompAction::Allow,
+            SeccompAction::Errno(libc::EPERM as u32),
+            arch,
+        )?;
+        BpfProgram::try_from(filter).context("failed to compile the socket filter")
+    }
+
+    // Landlock's restrict_self has already set no_new_privs, which seccomp requires.
+    fn apply_socket_filter() -> Result<()> {
+        let program = socket_filter()?;
+        seccompiler::apply_filter(&program).context("failed to apply the socket filter")
+    }
 
     pub(super) fn probe() -> Result<()> {
         let status = Ruleset::default()
@@ -91,9 +148,13 @@ mod linux {
             .restrict_self()
             .context("failed to enforce Landlock probe ruleset")?;
         validate_status(status.ruleset, status.landlock)?;
+        apply_socket_filter()?;
 
         let abi: ABI = status.landlock.into();
-        println!("landlock_abi={} ruleset=fully_enforced", abi as u8);
+        println!(
+            "landlock_abi={} ruleset=fully_enforced seccomp=socket_filter",
+            abi as u8
+        );
         Ok(())
     }
 
@@ -122,6 +183,7 @@ mod linux {
             .restrict_self()
             .context("failed to enforce Landlock ruleset")?;
         validate_status(status.ruleset, status.landlock)?;
+        apply_socket_filter()?;
 
         let (program, command_args) = args.command.split_first().context("missing command")?;
         let error = Command::new(program).args(command_args).exec();
