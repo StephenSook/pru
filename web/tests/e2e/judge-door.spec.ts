@@ -34,9 +34,17 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
   await expect(page.getByText("Test consent active")).toBeVisible();
 
   await page.getByRole("button", { name: localPrompt }).click();
-  await expect(page.getByText("If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s")).toBeVisible();
+  const progress = page.locator("[data-run-progress]");
+  await expect(progress.locator("[data-local-note]")).toHaveText(
+    "This request names the SSN, so the local Nemotron 3 Nano 4B reads it on this PC's CPU. " +
+    "Measured on a Nebius cpu-d3 endpoint, 4 vCPU: 11.1 s for a first local turn, 5.0 s for a repeat.",
+  );
+  await expect(progress.locator("[data-run-message]")).toHaveText("Pru is checking consent and selecting a model.");
+  // The stub local model answers after 3 s, so the counter must tick past zero while the turn runs.
+  await expect(progress.getByRole("timer")).toHaveText(/^[1-9]\d* s elapsed$/);
   const verdict = page.getByLabel("Assistant result").locator(".verdict");
   await expect(verdict.locator("[data-route-stamp='LOCAL']")).toBeVisible();
+  await expect(progress).toHaveCount(0);
   await expect(verdict).toHaveAttribute("data-decision", "ALLOWED");
   await expect(page.getByLabel("Assistant result")).not.toContainText(/\b\d{3}-\d{2}-\d{4}\b/);
 

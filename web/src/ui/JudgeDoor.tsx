@@ -2,7 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentNote, ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
+import { ENDPOINT_TEST, seconds } from "@/lib/measured";
 import { decisionLabel } from "@/lib/turn";
+import { RouteTradeoff, RunProgress } from "@/ui/Progress";
 import { LiveTurn, RecordedTurn, RouteBadge } from "@/ui/Turn";
 
 const PURPOSE = "prepare this synthetic tax client's return";
@@ -18,7 +20,7 @@ export const PRESETS = [
   },
   {
     prompt: "Check this client's SSN against the W-2 with the local model.",
-    outcome: "The SSN check runs on the local Nemotron 3 Nano 4B. The SSN never goes to Token Factory.",
+    outcome: `The SSN check runs on the local Nemotron 3 Nano 4B, measured at ${seconds(ENDPOINT_TEST.local.repeatTurnSeconds)} to ${seconds(ENDPOINT_TEST.local.firstTurnSeconds)} a turn. The SSN never goes to Token Factory.`,
   },
   {
     prompt: "Email this client's W-2 details to marketing@example.com",
@@ -37,7 +39,17 @@ export const PRESETS = [
     outcome: "Reads the consents on file and explains them.",
   },
 ] as const;
-const LOCAL_PROGRESS = "If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s";
+
+// The gateway sends SSN-bearing work to the local model, so a request that names the SSN is the
+// slow one worth warning about while it runs.
+function namesTheSsn(prompt: string): boolean {
+  return /\b(ssn|social security)\b/i.test(prompt);
+}
+
+// Read only from event handlers, when a turn starts.
+function wallClock(): number {
+  return Date.now();
+}
 
 type GatewayStreamEvent =
   | { type: "progress" | "heartbeat"; message: string }
@@ -140,7 +152,10 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("Loading test clients");
+  const [run, setRun] = useState<{ prompt: string; isLocal: boolean; startedAt: number } | null>(null);
+  const [progressMessage, setProgressMessage] = useState("");
   const resultRef = useRef<HTMLElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
 
   const selected = useMemo(() => clients.find((client) => client.id === clientId), [clients, clientId]);
   const activeConsents = consents.filter((consent) => !consent.revoked);
@@ -154,6 +169,12 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     result.focus({ preventScroll: true });
     result.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }, [turn]);
+
+  // When a turn starts, make its progress panel visible too, without moving focus.
+  useEffect(() => {
+    if (!run) return;
+    progressRef.current?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, [run]);
 
   // The public demo allows 30 requests a minute per workspace, so each action refetches only what
   // it can have changed: a chat turn never changes consent, and only remember_note changes notes.
@@ -199,14 +220,16 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     if (!clientId || busy) return;
     setBusy(true);
     setMessage(prompt);
-    const localTurn = /\b(ssn|social security)\b/i.test(prompt);
-    setStatus(localTurn ? LOCAL_PROGRESS : "Running one bounded assistant turn");
+    setRun({ prompt, isLocal: namesTheSsn(prompt), startedAt: wallClock() });
+    setProgressMessage("");
+    setStatus("Running one bounded assistant turn");
     try {
       const response = await api<ChatResponse>(`v1/clients/${clientId}/chat`, {
         method: "POST",
         body: JSON.stringify({ message: prompt }),
       }, (progress) => {
-        setStatus(localTurn ? LOCAL_PROGRESS : progress);
+        setProgressMessage(progress);
+        setStatus(progress);
       });
       setTurn(response);
       await refreshClient(clientId, { notes: response.steps.some((step) => step.tool_name === "remember_note") });
@@ -215,6 +238,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       setTurn(null);
       setStatus(error instanceof Error ? error.message : "Turn failed");
     } finally {
+      setRun(null);
       setBusy(false);
     }
   }
@@ -353,11 +377,23 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
                 </button>
               ))}
             </div>
+            <RouteTradeoff hosted={hosted} />
             <label className="field-label" htmlFor="message">One assistant turn</label>
             <textarea id="message" maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} />
             <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
           </div>
-          <div className="ask-result">
+          <div className="ask-result" aria-busy={run ? true : undefined}>
+            {run ? (
+              <RunProgress
+                key={run.startedAt}
+                prompt={run.prompt}
+                isLocal={run.isLocal}
+                hosted={hosted}
+                startedAt={run.startedAt}
+                message={progressMessage}
+                panelRef={progressRef}
+              />
+            ) : null}
             {turn ? <LiveTurn turn={turn} resultRef={resultRef} /> : <RecordedTurn />}
           </div>
         </div>

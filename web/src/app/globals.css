@@ -153,6 +153,22 @@ dd { margin: 1px 0 0; font-size: 13px; font-family: var(--typed); color: var(--e
   @keyframes stamp-down { from { opacity: 0; transform: rotate(-2deg) scale(1.25); } }
 }
 
+/* A turn in progress: what was asked, a seconds counter, the gateway's latest message */
+.run-progress { border: var(--rule-heavy); padding: 10px 14px; margin: 0 0 16px; background: var(--shade); }
+.run-progress p { margin: 0; }
+.run-head { font-weight: 700; font-size: 15px; line-height: 1.4; }
+.run-clock { font-family: var(--typed); font-weight: 700; font-size: 22px; color: var(--entry); margin: 4px 0 !important; }
+.run-message { font-size: 14px; line-height: 1.45; }
+.run-local { font-size: 14px; line-height: 1.45; margin-top: 6px !important; padding-top: 6px; border-top: var(--rule); }
+
+/* Route trade-off: a small form table */
+.tradeoff { margin: 0 0 4px; }
+.tradeoff table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.35; }
+.tradeoff th, .tradeoff td { border: var(--rule); padding: 5px 8px; text-align: left; vertical-align: top; }
+.tradeoff thead th { font-size: 12px; font-weight: 600; font-variation-settings: "wdth" 78; color: var(--ink-soft); background: var(--shade); }
+.tradeoff tbody th { font-weight: 700; white-space: nowrap; }
+.tradeoff figcaption { font-size: 12px; line-height: 1.4; color: var(--ink-soft); margin-top: 4px; }
+
 /* The folded trace under every answer */
 .trace { margin-top: 12px; border-top: var(--rule); }
 .trace > summary { cursor: pointer; padding: 8px 0; font-weight: 700; font-size: 15px; }
