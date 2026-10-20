@@ -35,23 +35,28 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
 
   await page.getByRole("button", { name: localPrompt }).click();
   await expect(page.getByText("If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s")).toBeVisible();
-  await expect(page.getByText("● LOCAL").first()).toBeVisible();
+  const verdict = page.getByLabel("Assistant result").locator(".verdict");
+  await expect(verdict.locator("[data-route-stamp='LOCAL']")).toBeVisible();
+  await expect(verdict).toHaveAttribute("data-decision", "ALLOWED");
   await expect(page.getByLabel("Assistant result")).not.toContainText(/\b\d{3}-\d{2}-\d{4}\b/);
 
   await page.getByRole("button", { name: deniedPrompt }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
+  await expect(verdict).toHaveAttribute("data-decision", "DENIED");
   await expect(page.getByLabel("Assistant result")).toContainText(/consent|policy/i);
 
   await page.getByRole("button", { name: emailPrompt }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
+  await expect(verdict).toHaveAttribute("data-decision", "DENIED");
 
   await page.getByLabel("Consent kind").selectOption("disclose");
   await page.getByRole("button", { name: "Mint test consent" }).click();
   await expect(page.getByText("Test consent active")).toBeVisible();
 
   await page.getByRole("button", { name: emailPrompt }).click();
-  await expect(page.getByText("↗ TOKEN FACTORY").first()).toBeVisible();
+  await expect(verdict.locator("[data-route-stamp='TOKEN FACTORY']")).toBeVisible();
   await expect(page.getByLabel("Assistant result")).toContainText("ALLOWED");
+  await expect(verdict).toHaveAttribute("data-decision", "ALLOWED");
 
   const revokeButtons = page.getByRole("button", { name: "Revoke" });
   await revokeButtons.last().click();
@@ -103,6 +108,10 @@ test("shows the agent, every traced step, and what Pru now remembers", async ({ 
   await expect(result).toContainText("Saved: this client prefers callback appointments");
   await expect(result.locator("[data-agent]")).toHaveText(/^Answered by Hermes Agent \S+$/);
   const trace = page.getByRole("list", { name: "Turn trace" });
+  // The steps sit folded under the answer until the reader opens them.
+  await expect(trace).toBeHidden();
+  await result.getByText(/^What happened, step by step/).click();
+  await expect(trace).toBeVisible();
   await expect(trace.locator("[data-step='remember_note']")).toContainText("Tool: remember_note");
   await expect(trace.locator("[data-step='remember_note']")).toContainText("ALLOWED");
 

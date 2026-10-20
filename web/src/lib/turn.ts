@@ -97,9 +97,12 @@ export type TurnSummary = {
 
 export function summarizeTurn(steps: readonly TraceStep[]): TurnSummary {
   const denied = steps.find((step) => step.decision === "deny") ?? null;
+  // A route counts only where the gateway let data go. A refused call keeps its intended route in
+  // the ledger, but nothing reached that model.
+  const permitted = steps.filter((step) => step.decision === "permit");
   const routes: RouteStamp[] = [];
-  if (steps.some((step) => step.route === "local")) routes.push("LOCAL");
-  if (steps.some((step) => step.route === "token_factory")) routes.push("TOKEN FACTORY");
+  if (permitted.some((step) => step.route === "local")) routes.push("LOCAL");
+  if (permitted.some((step) => step.route === "token_factory")) routes.push("TOKEN FACTORY");
   return {
     decision: denied ? "DENIED" : "ALLOWED",
     routes,
@@ -109,6 +112,25 @@ export function summarizeTurn(steps: readonly TraceStep[]): TurnSummary {
       .filter((step) => step.dryRun && step.decision === "permit" && step.toolName)
       .map((step) => step.toolName as string),
   };
+}
+
+const DRY_RUN_RESULTS: Record<string, string> = {
+  draft_client_email: "Drafted, not sent.",
+  propose_calendar_slot: "Proposed, not booked.",
+};
+
+// The plain sentence under a turn's stamps, built only from what its steps record.
+export function verdictSentence(summary: TurnSummary): string {
+  if (summary.denied) return reasonText(summary.denied.reason);
+  const parts: string[] = [];
+  if (summary.routes.includes("LOCAL")) parts.push("The SSN-bearing step ran on the local model.");
+  for (const tool of new Set(summary.dryRunTools)) {
+    parts.push(DRY_RUN_RESULTS[tool] ?? `${tool} ran as a dry run, nothing sent.`);
+  }
+  if (summary.redactedSpans > 0) {
+    parts.push(`${summary.redactedSpans} SSN ${summary.redactedSpans === 1 ? "span was" : "spans were"} removed before the data went to Token Factory.`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "Answered under the consent on file.";
 }
 
 export function stepTitle(step: TraceStep): string {

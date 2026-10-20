@@ -2,8 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentNote, ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
-import { decisionLabel, fromChatStep } from "@/lib/turn";
-import { RecordedTurn, RouteBadge, TraceList } from "@/ui/Turn";
+import { decisionLabel } from "@/lib/turn";
+import { LiveTurn, RecordedTurn, RouteBadge } from "@/ui/Turn";
 
 const PURPOSE = "prepare this synthetic tax client's return";
 const TEST_PIN = "53179";
@@ -358,17 +358,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
             <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
           </div>
           <div className="ask-result">
-            {turn ? (
-              <article className="answer" aria-label="Assistant result" ref={resultRef} tabIndex={-1}>
-                <p className="eyebrow">Assistant answer</p>
-                {turn.agent ? <p className="agent-line" data-agent>Answered by {turn.agent.name} {turn.agent.version}</p> : null}
-                <p>{turn.answer}</p>
-                <p className="eyebrow">What happened, in order</p>
-                <TraceList steps={turn.steps.map(fromChatStep)} label="Turn trace" />
-              </article>
-            ) : (
-              <RecordedTurn />
-            )}
+            {turn ? <LiveTurn turn={turn} resultRef={resultRef} /> : <RecordedTurn />}
           </div>
         </div>
       </Part>
