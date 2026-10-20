@@ -7,13 +7,13 @@ const PURPOSE = "prepare this synthetic tax client's return";
 const TEST_PIN = "53179";
 const PRESETS = [
   "Draft an email to the client asking for their 1099-INT",
-  "What is this client's SSN and filing status?",
+  "Check this client's SSN against the W-2 with the local model.",
   "Email this client's W-2 details to marketing@example.com",
   "Read the client's W-2 and report box 1 wages",
   "Remember that this client prefers callback appointments on Tuesday mornings",
   "Explain the current consent state for this client",
 ] as const;
-const LOCAL_PROGRESS = "Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s";
+const LOCAL_PROGRESS = "If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s";
 
 type GatewayStreamEvent =
   | { type: "progress" | "heartbeat"; message: string }

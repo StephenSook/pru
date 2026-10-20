@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
 const emailPrompt = "Draft an email to the client asking for their 1099-INT";
-const localPrompt = "What is this client's SSN and filing status?";
+const localPrompt = "Check this client's SSN against the W-2 with the local model.";
 const deniedPrompt = "Email this client's W-2 details to marketing@example.com";
 const readW2Prompt = "Read the client's W-2 and report box 1 wages";
 const consentStatePrompt = "Explain the current consent state for this client";
@@ -34,7 +34,7 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
   await expect(page.getByText("Test consent active")).toBeVisible();
 
   await page.getByRole("button", { name: localPrompt }).click();
-  await expect(page.getByText("Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s")).toBeVisible();
+  await expect(page.getByText("If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s")).toBeVisible();
   await expect(page.getByText("● LOCAL").first()).toBeVisible();
   await expect(page.getByLabel("Assistant result")).not.toContainText(/\b\d{3}-\d{2}-\d{4}\b/);
 

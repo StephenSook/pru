@@ -54,13 +54,13 @@ function hermesMessage(messages, serialized) {
     }
     return { role: "assistant", content: "The active consent state was retrieved." };
   }
-  if (serialized.includes("What is this client's SSN")) {
+  if (serialized.includes("Check this client's SSN against the W-2")) {
     if (!called.includes("mcp__pru__ask_local_model")) {
       return mcpToolCall("ask_local_model", {
-        question: "Return this TEST DATA client's SSN and filing status.",
+        question: "Check this TEST DATA client's SSN against the W-2.",
       }, called.length);
     }
-    return { role: "assistant", content: "The TEST DATA SSN stayed local. Filing status: Single." };
+    return { role: "assistant", content: "The TEST DATA SSN stayed local and matches the W-2." };
   }
   if (serialized.includes("marketing@example.com")) {
     if (!called.includes("mcp__pru__read_document")) {
