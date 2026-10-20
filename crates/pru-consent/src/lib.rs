@@ -11,13 +11,26 @@ use std::time::SystemTime;
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use biscuit_auth::macros::{authorizer, biscuit};
-use biscuit_auth::{Algorithm, Biscuit, KeyPair, PublicKey};
+use biscuit_auth::{Algorithm, AuthorizerBuilder, AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The minimum consent PIN length required by Rev. Proc. 2013-14.
 pub const MINIMUM_PIN_LENGTH: usize = 5;
+
+/// Time budget for one consent token's Datalog. biscuit-auth defaults to 1 ms, and a CI runner (or
+/// the hosted CPU while the local model runs) exceeded it, so a valid consent was refused with
+/// "Reached Datalog execution limits". The fact and iteration caps stay at the library defaults; a
+/// consent token holds one record and one expiry check.
+pub const CONSENT_DATALOG_TIME_LIMIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+fn consent_limits() -> AuthorizerLimits {
+    AuthorizerLimits {
+        max_time: CONSENT_DATALOG_TIME_LIMIT,
+        ..AuthorizerLimits::default()
+    }
+}
 
 /// The action authorized by a consent document.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,6 +357,7 @@ impl ConsentVerifier {
                 allow if true;
             "#,
         )
+        .set_limits(consent_limits())
         .build(&token)?;
 
         if let Err(error) = authorizer.authorize() {
@@ -434,7 +448,9 @@ fn extract_record(token: &Biscuit) -> Result<ConsentRecord, ConsentError> {
         String,
     );
 
-    let mut authorizer = token.authorizer()?;
+    let mut authorizer = AuthorizerBuilder::new()
+        .set_limits(consent_limits())
+        .build(token)?;
     let (
         client_id,
         kind,
@@ -470,9 +486,22 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
     use super::{
-        ConsentAuthority, ConsentError, ConsentKind, ConsentRecord, ConsentVerifier,
-        MINIMUM_PIN_LENGTH, RevocationList,
+        CONSENT_DATALOG_TIME_LIMIT, ConsentAuthority, ConsentError, ConsentKind, ConsentRecord,
+        ConsentVerifier, MINIMUM_PIN_LENGTH, RevocationList, consent_limits,
     };
+
+    #[test]
+    fn consent_datalog_gets_a_time_budget_a_loaded_cpu_can_meet() {
+        // biscuit-auth's default is 1 ms, which CI exceeded on a valid consent.
+        let limits = consent_limits();
+        assert_eq!(limits.max_time, CONSENT_DATALOG_TIME_LIMIT);
+        assert_eq!(limits.max_time, std::time::Duration::from_millis(50));
+        let defaults = biscuit_auth::AuthorizerLimits::default();
+        assert_eq!(
+            (limits.max_facts, limits.max_iterations),
+            (defaults.max_facts, defaults.max_iterations)
+        );
+    }
 
     const PIN: &str = "53179";
 
