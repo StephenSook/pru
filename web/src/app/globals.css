@@ -134,3 +134,12 @@ footer p { color: var(--ink-soft); margin: 0; }
 .memory { margin-top: 18px; border-top: var(--rule); padding-top: 12px; }
 .memory ul { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
 .memory li p { margin: 0; font-weight: 600; }
+
+/* A finished turn read from the committed receipt */
+.recorded-source { margin: 0 0 10px; font-size: 13px; font-weight: 600; font-variation-settings: "wdth" 80; color: var(--ink-soft); }
+.recorded-request { margin: 0 0 8px; font-family: var(--typed); color: var(--entry); overflow-wrap: anywhere; }
+.turn-headline { font-size: 24px; line-height: 1.2; font-weight: 800; font-variation-settings: "wdth" 90; margin: 0 0 10px; overflow-wrap: anywhere; }
+.recorded-why, .recorded-meta { font-size: 14px; line-height: 1.5; color: var(--ink-soft); }
+.recorded-answer { white-space: pre-wrap; font-family: var(--typed); color: var(--entry); border-left: var(--rule); padding-left: 12px; overflow-wrap: anywhere; }
+.recorded-facts { margin: 12px 0; padding-left: 18px; list-style: square; line-height: 1.5; }
+.reason-code { font-family: var(--typed); color: var(--ink-soft); font-size: 13px; }

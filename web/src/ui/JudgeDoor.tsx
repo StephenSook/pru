@@ -1,7 +1,9 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { AgentNote, ChatResponse, ChatStep, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
+import type { AgentNote, ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
+import { decisionLabel, fromChatStep } from "@/lib/turn";
+import { RecordedTurn, RouteBadge, TraceList } from "@/ui/Turn";
 
 const PURPOSE = "prepare this synthetic tax client's return";
 const TEST_PIN = "53179";
@@ -93,33 +95,6 @@ function SquashButton({ children, tone = "plum", ...props }: React.ButtonHTMLAtt
   return <button className={`squash squash-${tone}`} {...props}>{children}</button>;
 }
 
-// Where each ledger row's data went, in the gateway's own route names. An agent tool result
-// enters the agent's context; it reaches Token Factory only inside a later model call row.
-const ROUTES: Record<string, { label: string; tone: string }> = {
-  local: { label: "● LOCAL", tone: "route-local" },
-  token_factory: { label: "↗ TOKEN FACTORY", tone: "route-cloud" },
-  dynamic: { label: "↻ AGENT CONTEXT", tone: "route-agent" },
-  dry_run: { label: "◌ DRY RUN", tone: "route-agent" },
-  gateway: { label: "● IN PRU", tone: "route-local" },
-};
-
-function RouteBadge({ route }: Readonly<{ route: string }>) {
-  const known = ROUTES[route] ?? { label: route.replaceAll("_", " ").toUpperCase(), tone: "route-agent" };
-  return <span className={`route-badge ${known.tone}`}>{known.label}</span>;
-}
-
-// One row of the turn's trace: a hosted or local model call, or a tool the agent ran through Pru.
-function stepTitle(step: ChatStep): string {
-  if (step.tool_name) return `Tool: ${step.tool_name}`;
-  if (step.kind === "model" || step.route === "token_factory" || step.route === "local") return "Model call";
-  return step.kind.replaceAll("_", " ");
-}
-
-function decisionLabel(decision: string): string {
-  if (decision === "permit") return "ALLOWED";
-  if (decision === "deny") return "DENIED";
-  return decision.toUpperCase();
-}
 
 export function localModelLocation(hosted: boolean): string {
   return hosted
@@ -307,35 +282,16 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
           <label className="field-label" htmlFor="message">One assistant turn</label>
           <textarea id="message" maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} />
           <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
-          {turn && (
+          {turn ? (
             <article className="answer" aria-label="Assistant result">
               <p className="eyebrow">ASSISTANT ANSWER</p>
               {turn.agent ? <p className="agent-line" data-agent>Answered by {turn.agent.name} {turn.agent.version}</p> : null}
               <p>{turn.answer}</p>
               <p className="eyebrow">WHAT HAPPENED, IN ORDER</p>
-              <ol className="step-list" aria-label="Turn trace">
-                {turn.steps.map((step) => (
-                  <li className="step" key={step.ledger_entry_id} data-step={step.tool_name ?? step.kind}>
-                    <div>
-                      <RouteBadge route={step.route} />
-                      <strong>{decisionLabel(step.decision)}</strong>
-                      <span className="step-title">{stepTitle(step)}</span>
-                      {step.dry_run ? <span className="dry-run">DRY RUN, NOTHING SENT</span> : null}
-                    </div>
-                    <p>{step.policy_reason}</p>
-                    {step.redacted_spans ? (
-                      <p className="redacted">{step.redacted_spans} sensitive {step.redacted_spans === 1 ? "span was" : "spans were"} removed before this call.</p>
-                    ) : null}
-                    <dl>
-                      <div><dt>Model</dt><dd>{step.model_id ?? "none"}</dd></div>
-                      <div><dt>Latency</dt><dd>{step.latency_ms} ms</dd></div>
-                      <div><dt>Tokens</dt><dd>{step.input_tokens} in / {step.output_tokens} out</dd></div>
-                      <div><dt>Cost</dt><dd>${step.cost_usd.toFixed(8)}</dd></div>
-                    </dl>
-                  </li>
-                ))}
-              </ol>
+              <TraceList steps={turn.steps.map(fromChatStep)} label="Turn trace" />
             </article>
+          ) : (
+            <RecordedTurn />
           )}
         </SectionCard>
 
