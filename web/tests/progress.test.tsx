@@ -1,10 +1,38 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENDPOINT_TEST } from "../src/lib/measured";
 import { PRESETS } from "../src/ui/JudgeDoor";
-import { localTurnNote, RouteTradeoff } from "../src/ui/Progress";
+import { localTurnNote, RouteTradeoff, RunProgress } from "../src/ui/Progress";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+describe("turn progress", () => {
+  it("counts elapsed seconds while a turn runs", () => {
+    vi.useFakeTimers();
+    render(<RunProgress prompt="Read the client's W-2" isLocal={false} hosted={false} startedAt={Date.now()} message="" />);
+    expect(screen.getByRole("timer")).toHaveTextContent("0 s elapsed");
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByRole("timer")).toHaveTextContent("2 s elapsed");
+    act(() => {
+      vi.advanceTimersByTime(9_000);
+    });
+    expect(screen.getByRole("timer")).toHaveTextContent("11 s elapsed");
+  });
+
+  it("adds the measured local note only for a request that names the SSN", () => {
+    render(<RunProgress prompt="Check this client's SSN" isLocal hosted={false} startedAt={0} message="Pru is checking consent and selecting a model." />);
+    expect(document.querySelector("[data-local-note]")?.textContent).toBe(localTurnNote(false));
+    expect(document.querySelector("[data-run-message]")?.textContent).toBe("Pru is checking consent and selecting a model.");
+    cleanup();
+    render(<RunProgress prompt="Read the client's W-2" isLocal={false} hosted={false} startedAt={0} message="" />);
+    expect(document.querySelector("[data-local-note]")).toBeNull();
+  });
+});
 
 describe("measured route trade-offs", () => {
   it("shows exactly the endpoint test's numbers and says how cost was computed", () => {
