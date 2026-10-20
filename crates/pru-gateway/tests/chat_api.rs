@@ -255,9 +255,9 @@ async fn ssn_free_turn_uses_token_factory_and_permitted_email_stays_dry_run() {
     assert_eq!(body["steps"][0]["route"], "token_factory");
     assert_eq!(
         body["steps"][0]["model_id"],
-        "nvidia/nemotron-3-super-120b-a12b"
+        pru_gateway::TOKEN_FACTORY_LIGHTNING_MODEL
     );
-    assert_eq!(body["steps"][0]["cost_usd"], 0.000048);
+    assert_eq!(body["steps"][0]["cost_usd"], 0.0000108);
     assert_eq!(body["steps"][1]["decision"], "permit");
     assert_eq!(body["steps"][1]["dry_run"], true);
     assert_eq!(body["steps"][1]["tool_name"], "draft_email");

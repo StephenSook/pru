@@ -259,7 +259,10 @@ async fn ssn_free_prompt_with_disclosure_consent_routes_to_token_factory() {
     assert!(harness.local_calls.lock().expect("local calls").is_empty());
     let calls = harness.remote_calls.lock().expect("remote calls");
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["model"], "nvidia/nemotron-3-super-120b-a12b");
+    assert_eq!(
+        calls[0]["model"],
+        pru_gateway::TOKEN_FACTORY_LIGHTNING_MODEL
+    );
     assert_eq!(calls[0]["chat_template_kwargs"]["enable_thinking"], false);
 }
 

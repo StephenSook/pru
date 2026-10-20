@@ -39,7 +39,7 @@ use limits::{LimitError, TokenBudget, TokenReservation};
 
 pub const TOKEN_FACTORY_LIGHTNING_MODEL: &str = "nvidia/Nemotron-3_5-Lightning";
 pub const TOKEN_FACTORY_SUPER_MODEL: &str = "nvidia/nemotron-3-super-120b-a12b";
-pub const TOKEN_FACTORY_MODEL: &str = TOKEN_FACTORY_SUPER_MODEL;
+pub const TOKEN_FACTORY_MODEL: &str = TOKEN_FACTORY_LIGHTNING_MODEL;
 pub const TOKEN_FACTORY_RECIPIENT: &str = "Nebius Token Factory";
 pub const MAX_CONCURRENT_LOCAL_GENERATIONS: usize = 1;
 // A second visitor's local turn waits this long for the one CPU model instead of failing at once.
@@ -89,8 +89,8 @@ pub struct GatewayConfig {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TokenFactoryModel {
-    Lightning,
     #[default]
+    Lightning,
     Super,
 }
 

@@ -13,7 +13,7 @@ if [ -z "${NEBIUS_API_KEY:-}" ]; then
   echo "Token Factory disabled"
 fi
 
-PRU_TOKEN_FACTORY_MODEL="${PRU_TOKEN_FACTORY_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
+PRU_TOKEN_FACTORY_MODEL="${PRU_TOKEN_FACTORY_MODEL:-nvidia/Nemotron-3_5-Lightning}"
 case "${PRU_TOKEN_FACTORY_MODEL}" in
   nvidia/Nemotron-3_5-Lightning|nvidia/nemotron-3-super-120b-a12b) ;;
   *)

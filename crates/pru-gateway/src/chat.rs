@@ -810,7 +810,7 @@ mod tests {
     fn token_factory_model_constant_matches_the_costed_model() {
         assert_eq!(
             crate::TOKEN_FACTORY_MODEL,
-            "nvidia/nemotron-3-super-120b-a12b"
+            crate::TOKEN_FACTORY_LIGHTNING_MODEL
         );
     }
 }
