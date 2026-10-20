@@ -15,15 +15,15 @@ import {
 // Where each ledger row's data went, in the gateway's own route names. An agent tool result
 // enters the agent's context; it reaches Token Factory only inside a later model call row.
 const ROUTES: Record<string, { label: string; tone: string }> = {
-  local: { label: "● LOCAL", tone: "route-local" },
-  token_factory: { label: "↗ TOKEN FACTORY", tone: "route-cloud" },
-  dynamic: { label: "↻ AGENT CONTEXT", tone: "route-agent" },
-  dry_run: { label: "◌ DRY RUN", tone: "route-agent" },
-  gateway: { label: "● IN PRU", tone: "route-local" },
+  local: { label: "Local model", tone: "route-local" },
+  token_factory: { label: "Token Factory", tone: "route-cloud" },
+  dynamic: { label: "Agent's working context", tone: "route-agent" },
+  dry_run: { label: "Dry run", tone: "route-agent" },
+  gateway: { label: "Inside Pru", tone: "route-local" },
 };
 
 export function RouteBadge({ route }: Readonly<{ route: string }>) {
-  const known = ROUTES[route] ?? { label: route.replaceAll("_", " ").toUpperCase(), tone: "route-agent" };
+  const known = ROUTES[route] ?? { label: route.replaceAll("_", " "), tone: "route-agent" };
   return <span className={`route-badge ${known.tone}`}>{known.label}</span>;
 }
 
@@ -37,7 +37,7 @@ export function TraceList({ steps, label }: Readonly<{ steps: readonly TraceStep
             <RouteBadge route={step.route} />
             <strong className={`decision decision-${step.decision}`}>{decisionLabel(step.decision)}</strong>
             <span className="step-title">{stepTitle(step)}</span>
-            {step.dryRun ? <span className="dry-run">DRY RUN, NOTHING SENT</span> : null}
+            {step.dryRun ? <span className="dry-run">Nothing sent</span> : null}
           </div>
           <p>{reasonText(step.reason)} <span className="reason-code">({step.reason})</span></p>
           {step.redactedSpans ? (

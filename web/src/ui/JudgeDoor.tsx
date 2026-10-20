@@ -3,11 +3,22 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentNote, ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
 import { ENDPOINT_TEST, seconds } from "@/lib/measured";
-import { decisionLabel } from "@/lib/turn";
+import { decisionLabel, reasonText } from "@/lib/turn";
 import { RouteTradeoff, RunProgress } from "@/ui/Progress";
 import { LiveTurn, RecordedTurn, RouteBadge } from "@/ui/Turn";
 
 const PURPOSE = "prepare this synthetic tax client's return";
+
+// The two consents Pru records, in a preparer's words. A disclosure always names its recipient,
+// which can be the client's own address, so it is not called a third-party disclosure here.
+const CONSENT_KINDS: Record<Consent["kind"], string> = {
+  use: "Use for preparing this return",
+  disclose: "Disclose to a named recipient",
+};
+
+function consentLabel(consent: Consent): string {
+  return consent.kind === "disclose" ? `Disclose to ${consent.recipient}` : CONSENT_KINDS.use;
+}
 const TEST_PIN = "53179";
 
 // Each preset says what the gateway will do with it, in the terms of its own rules: a draft needs a
@@ -207,10 +218,10 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   async function selectClient(id: string) {
     setClientId(id);
     setTurn(null);
-    setStatus("Loading client boundary");
+    setStatus("Loading client file");
     try {
       await refreshClient(id, { consents: true, notes: true });
-      setStatus("Client boundary loaded");
+      setStatus("Client file loaded");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
     }
@@ -222,7 +233,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     setMessage(prompt);
     setRun({ prompt, isLocal: namesTheSsn(prompt), startedAt: wallClock() });
     setProgressMessage("");
-    setStatus("Running one bounded assistant turn");
+    setStatus("Running one request");
     try {
       const response = await api<ChatResponse>(`v1/clients/${clientId}/chat`, {
         method: "POST",
@@ -233,10 +244,10 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       });
       setTurn(response);
       await refreshClient(clientId, { notes: response.steps.some((step) => step.tool_name === "remember_note") });
-      setStatus("Turn complete");
+      setStatus("Request finished");
     } catch (error) {
       setTurn(null);
-      setStatus(error instanceof Error ? error.message : "Turn failed");
+      setStatus(error instanceof Error ? error.message : "Request failed");
     } finally {
       setRun(null);
       setBusy(false);
@@ -246,7 +257,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   async function recordConsent(nextKind: "use" | "disclose", nextRecipient: string | null) {
     if (!clientId || busy) return;
     setBusy(true);
-    setStatus("Minting test consent");
+    setStatus("Recording client consent");
     try {
       await api<Consent>(`v1/clients/${clientId}/consents`, {
         method: "POST",
@@ -259,9 +270,9 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
         }),
       });
       await refreshClient(clientId);
-      setStatus("Test consent active");
+      setStatus("Client consent recorded");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Consent failed");
+      setStatus(error instanceof Error ? error.message : "Recording consent failed");
     } finally {
       setBusy(false);
     }
@@ -274,11 +285,11 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
 
   async function revokeConsent(id: string) {
     setBusy(true);
-    setStatus("Revoking test consent");
+    setStatus("Revoking client consent");
     try {
       await api<Consent>(`v1/clients/${clientId}/consents/${id}/revoke`, { method: "POST" });
       await refreshClient(clientId);
-      setStatus("Test consent revoked");
+      setStatus("Client consent revoked");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Revocation failed");
     } finally {
@@ -320,12 +331,12 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       </header>
 
       <p className="legal-note">
-        <strong>Public demo.</strong> This demo accepts test clients only. An unused browser workspace expires after 10 idle minutes. After you mint consent or run chat, it expires after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
+        <strong>Public demo.</strong> This demo accepts test clients only. An unused browser workspace expires after 10 idle minutes. After you record consent or run a request, it expires after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
       </p>
 
       <section className="client-strip" aria-label="Select a test client">
         <div className="box box-client">
-          <label className="box-label" htmlFor="client">Client boundary</label>
+          <label className="box-label" htmlFor="client">Client file</label>
           <select id="client" value={clientId} onChange={(event) => void selectClient(event.target.value)} disabled={busy}>
             {clients.map((client) => <option key={client.id} value={client.id}>{client.name} (test data)</option>)}
           </select>
@@ -345,7 +356,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
             </span>
           ) : (
             <span className="typed">
-              {activeConsents.map((consent) => (consent.kind === "disclose" ? `disclose to ${consent.recipient}` : "use")).join("; ")}
+              {activeConsents.map((consent) => consentLabel(consent)).join("; ")}
             </span>
           )}
         </div>
@@ -378,9 +389,9 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
               ))}
             </div>
             <RouteTradeoff hosted={hosted} />
-            <label className="field-label" htmlFor="message">One assistant turn</label>
+            <label className="field-label" htmlFor="message">Or write your own request</label>
             <textarea id="message" maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} />
-            <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
+            <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Send to Pru"}</SquashButton>
           </div>
           <div className="ask-result" aria-busy={run ? true : undefined}>
             {run ? (
@@ -400,27 +411,27 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       </Part>
 
       <div className="lower-parts">
-        <Part numeral="II" title="Consent ledger" id="part-consent" className="consent-card">
+        <Part numeral="II" title="Client consent (Section 7216)" id="part-consent" className="consent-card">
           <form onSubmit={mintConsent}>
-            <label className="field-label" htmlFor="kind">Consent kind</label>
+            <label className="field-label" htmlFor="kind">Type of consent</label>
             <select id="kind" value={kind} onChange={(event) => {
               const next = event.target.value as "use" | "disclose";
               setKind(next);
               setRecipient(next === "disclose" ? selected?.email ?? "" : "");
             }}>
-              <option value="use">use</option>
-              <option value="disclose">disclose</option>
+              <option value="use">{CONSENT_KINDS.use}</option>
+              <option value="disclose">{CONSENT_KINDS.disclose}</option>
             </select>
-            {kind === "disclose" && <><label className="field-label" htmlFor="recipient">Recipient</label><input id="recipient" value={recipient} onChange={(event) => setRecipient(event.target.value)} required /></>}
-            <div className="pin-slip"><span>Test only PIN</span><strong>{TEST_PIN}</strong></div>
-            <SquashButton type="submit" disabled={busy || !clientId}>Mint test consent</SquashButton>
+            {kind === "disclose" && <><label className="field-label" htmlFor="recipient">Recipient&apos;s email</label><input id="recipient" value={recipient} onChange={(event) => setRecipient(event.target.value)} required /></>}
+            <div className="pin-slip"><span>Client signing PIN (test data only)</span><strong>{TEST_PIN}</strong></div>
+            <SquashButton type="submit" disabled={busy || !clientId}>Record client consent (Section 7216)</SquashButton>
           </form>
           <div className="consent-list">
             {consents.length === 0 && <p className="empty">No consent exists for this client.</p>}
             {consents.map((consent) => (
               <article key={consent.id} className={consent.revoked ? "consent revoked" : "consent"}>
-                <div><strong>{consent.kind}</strong><span>{consent.revoked ? "REVOKED" : "ACTIVE"}</span></div>
-                <p>{consent.recipient ?? "local and approved processor use"}</p>
+                <div><strong>{CONSENT_KINDS[consent.kind]}</strong><span>{consent.revoked ? "Revoked" : "Active"}</span></div>
+                <p>{consent.recipient ? `Recipient: ${consent.recipient}` : "Covers the local model and Token Factory as an approved processor."}</p>
                 {!consent.revoked && <SquashButton tone="wax" onClick={() => void revokeConsent(consent.id)} disabled={busy}>Revoke</SquashButton>}
               </article>
             ))}
@@ -443,19 +454,19 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
           </div>
         </Part>
 
-        <Part numeral="III" title="Egress ledger" id="part-ledger" className="ledger-card">
-          <p className="small-note">Newest first. The keyed span hash proves the same sensitive span was seen without storing its value.</p>
+        <Part numeral="III" title="Where this client's data went" id="part-ledger" className="ledger-card">
+          <p className="small-note">Newest first, one row per gateway decision. The SSN fingerprint is a keyed hash, so the same SSN is recognized again without being stored.</p>
           <div className="ledger-list">
-            {ledger.length === 0 && <p className="empty">Run a prompt to create a decision entry.</p>}
+            {ledger.length === 0 && <p className="empty">Run a request to see where this client&apos;s data went.</p>}
             {ledger.map((entry) => (
               <article className="ledger-row" key={entry.id}>
                 <div><RouteBadge route={entry.route} /><strong className={`decision decision-${entry.decision}`}>{decisionLabel(entry.decision)}</strong></div>
-                <p>{entry.policy_reason}</p>
+                <p>{reasonText(entry.policy_reason)} <span className="reason-code">({entry.policy_reason})</span></p>
                 <dl>
                   <div><dt>Action</dt><dd>{entry.action}</dd></div>
                   <div><dt>Model</dt><dd>{entry.model_id ?? "none"}</dd></div>
-                  <div><dt>Entry</dt><dd className="hash">{entry.id}</dd></div>
-                  <div><dt>Span hash</dt><dd className="hash">{entry.span_hashes[0] ?? "none"}</dd></div>
+                  <div><dt>Ledger entry</dt><dd className="hash">{entry.id}</dd></div>
+                  <div><dt>Fingerprint of the SSN seen (value not stored)</dt><dd className="hash">{entry.span_hashes[0] ?? "none"}</dd></div>
                 </dl>
               </article>
             ))}
@@ -472,7 +483,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
         <p className="not-proved"><strong>What is not proved:</strong> It does not prove that the gateway&apos;s context labels are truthful.</p>
       </Part>
 
-      <footer><span>Pru</span><p>One client boundary at a time.</p></footer>
+      <footer><span>Pru</span><p>One client file at a time.</p></footer>
     </main>
   );
 }

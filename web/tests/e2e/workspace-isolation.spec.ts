@@ -26,11 +26,11 @@ test("keeps two browser workspaces separate and resets only the caller", async (
     expect(await pageA.evaluate(() => document.cookie)).not.toContain(COOKIE);
     expect(await pageB.evaluate(() => document.cookie)).not.toContain(COOKIE);
 
-    await pageA.getByRole("button", { name: "Mint test consent" }).click();
-    await pageB.getByRole("button", { name: "Mint test consent" }).click();
+    await pageA.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
+    await pageB.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
     await Promise.all([
-      expect(pageA.getByText("Test consent active")).toBeVisible(),
-      expect(pageB.getByText("Test consent active")).toBeVisible(),
+      expect(pageA.getByText("Client consent recorded")).toBeVisible(),
+      expect(pageB.getByText("Client consent recorded")).toBeVisible(),
     ]);
 
     await pageA.getByRole("button", { name: "Reset demo" }).click();
@@ -38,7 +38,7 @@ test("keeps two browser workspaces separate and resets only the caller", async (
     await expect(pageA.getByText("No consent exists for this client.")).toBeVisible();
     await pageB.reload();
     await expect(pageB.getByText("Test data ready")).toBeVisible();
-    await expect(pageB.getByText("ACTIVE")).toBeVisible();
+    await expect(pageB.locator(".consent-list").getByText("Active", { exact: true })).toBeVisible();
   } finally {
     await contextA.close();
     await contextB.close();

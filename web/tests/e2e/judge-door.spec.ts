@@ -26,12 +26,12 @@ test.beforeEach(async ({ page }) => {
 test("runs the three preset routes and the consent lifecycle", async ({ page, request }) => {
   await expect(page.getByText("This demo accepts test clients only.", { exact: false })).toBeVisible();
   await expect(page.getByText("An unused browser workspace expires after 10 idle minutes.", { exact: false })).toBeVisible();
-  await expect(page.getByText("After you mint consent or run chat, it expires after one idle hour.", { exact: false })).toBeVisible();
+  await expect(page.getByText("After you record consent or run a request, it expires after one idle hour.", { exact: false })).toBeVisible();
   await expect(page.getByText("Do not enter real taxpayer data.", { exact: false })).toBeVisible();
   await expect(page.getByText("this PC's own model, never sent to a model provider", { exact: false })).toBeVisible();
-  await page.getByLabel("Consent kind").selectOption("use");
-  await page.getByRole("button", { name: "Mint test consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
+  await page.getByLabel("Type of consent").selectOption("use");
+  await page.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
+  await expect(page.getByText("Client consent recorded")).toBeVisible();
 
   await page.getByRole("button", { name: localPrompt }).click();
   const progress = page.locator("[data-run-progress]");
@@ -57,9 +57,9 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
   await expect(verdict).toHaveAttribute("data-decision", "DENIED");
 
-  await page.getByLabel("Consent kind").selectOption("disclose");
-  await page.getByRole("button", { name: "Mint test consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
+  await page.getByLabel("Type of consent").selectOption("disclose");
+  await page.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
+  await expect(page.getByText("Client consent recorded")).toBeVisible();
 
   await page.getByRole("button", { name: emailPrompt }).click();
   await expect(verdict.locator("[data-route-stamp='TOKEN FACTORY']")).toBeVisible();
@@ -68,7 +68,7 @@ test("runs the three preset routes and the consent lifecycle", async ({ page, re
 
   const revokeButtons = page.getByRole("button", { name: "Revoke" });
   await revokeButtons.last().click();
-  await expect(page.getByText("Test consent revoked")).toBeVisible();
+  await expect(page.getByText("Client consent revoked")).toBeVisible();
   await page.getByRole("button", { name: emailPrompt }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("DENIED");
 
@@ -92,23 +92,23 @@ test("has no serious accessibility violations", async ({ page }) => {
 });
 
 test("replays the Hermes W-2 alias and MCP structured-content regressions", async ({ page }) => {
-  await page.getByLabel("Consent kind").selectOption("use");
-  await page.getByRole("button", { name: "Mint test consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
+  await page.getByLabel("Type of consent").selectOption("use");
+  await page.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
+  await expect(page.getByText("Client consent recorded")).toBeVisible();
 
-  await page.getByLabel("One assistant turn").fill(readW2Prompt);
-  await page.getByRole("button", { name: "Run this turn" }).click();
+  await page.getByLabel("Or write your own request").fill(readW2Prompt);
+  await page.getByRole("button", { name: "Send to Pru" }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("$48,250");
 
-  await page.getByLabel("One assistant turn").fill(consentStatePrompt);
-  await page.getByRole("button", { name: "Run this turn" }).click();
+  await page.getByLabel("Or write your own request").fill(consentStatePrompt);
+  await page.getByRole("button", { name: "Send to Pru" }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("consent state was retrieved");
 });
 
 test("shows the agent, every traced step, and what Pru now remembers", async ({ page }) => {
-  await page.getByLabel("Consent kind").selectOption("use");
-  await page.getByRole("button", { name: "Mint test consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
+  await page.getByLabel("Type of consent").selectOption("use");
+  await page.getByRole("button", { name: "Record client consent (Section 7216)" }).click();
+  await expect(page.getByText("Client consent recorded")).toBeVisible();
   await expect(page.getByLabel("What Pru remembers about this client")).toContainText("No notes yet.");
 
   await page.getByRole("button", { name: rememberPrompt }).click();
@@ -143,8 +143,8 @@ test("shows a recorded turn on load and brings a finished turn into view on a ph
   const consentOnFile = page.locator("[data-consent-on-file]");
   await expect(consentOnFile).toContainText("None.");
   await consentOnFile.getByRole("button", { name: "Record a use consent" }).click();
-  await expect(page.getByText("Test consent active")).toBeVisible();
-  await expect(consentOnFile).toContainText("use");
+  await expect(page.getByText("Client consent recorded")).toBeVisible();
+  await expect(consentOnFile).toContainText("Use for preparing this return");
 
   // The first preset is six cells above the result box, so only the page's own scroll can bring
   // the result into view once the turn finishes.
