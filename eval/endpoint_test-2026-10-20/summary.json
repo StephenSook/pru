@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-20",
+  "endpoint": "Nebius AI Cloud Serverless endpoint, platform cpu-d3, 4 vCPU, 16 GB RAM, image cr.us-north1.nebius.cloud/u02kzh2pk6f9v0bqd6/pru:438e95d",
+  "client": "the synthetic tax client in this repository",
+  "note": "Each .ndjson file is the streamed /api/turn response saved by curl during the test. wall_seconds is curl's time_total for that request, printed by the same command and copied from the operator's session log; the responses do not carry it. The endpoint was deleted after the test.",
+  "turns": {
+    "turn1": {
+      "route": "token_factory",
+      "wall_seconds": 2.924758,
+      "file": "turn1.ndjson"
+    },
+    "turn2": {
+      "route": "token_factory",
+      "wall_seconds": 1.326214,
+      "file": "turn2.ndjson"
+    },
+    "turn4": {
+      "route": "token_factory",
+      "wall_seconds": 0.964895,
+      "file": "turn4.ndjson"
+    },
+    "turnL1": {
+      "route": "local, first local turn",
+      "wall_seconds": 11.109958,
+      "file": "turnL1.ndjson"
+    },
+    "turnL2": {
+      "route": "local, repeat",
+      "wall_seconds": 4.956332,
+      "file": "turnL2.ndjson"
+    }
+  },
+  "healthz": {
+    "status": "ready",
+    "next": "ready",
+    "gateway": "ready",
+    "llama": "ready",
+    "agent": "Hermes Agent v0.22.2 (Nous Research)",
+    "jail": "Landlock enforced (ABI 5) + seccomp socket filter"
+  },
+  "ingress_headers": "Probed with a separate header-echo endpoint behind the same Nebius endpoint ingress (us-north1) on 2026-10-20: a request sent with X-Forwarded-For, X-Real-IP and True-Client-IP set to 203.0.113.9 arrived with X-Forwarded-For replaced by the caller's single public address (not recorded here) and X-Real-Ip and True-Client-Ip unchanged at 203.0.113.9."
+}
