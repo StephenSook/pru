@@ -41,10 +41,24 @@ export type ChatStep = {
   ledger_entry_id: string;
   dry_run: boolean;
   tool_name: string | null;
+  redacted_spans?: number;
+};
+
+export type AgentIdentity = {
+  name: string;
+  version: string;
 };
 
 export type ChatResponse = {
   turn_id: string;
+  agent?: AgentIdentity;
   answer: string;
   steps: ChatStep[];
+};
+
+export type AgentNote = {
+  id: string;
+  text: string;
+  created_at: string;
+  ledger_entry_id: string;
 };

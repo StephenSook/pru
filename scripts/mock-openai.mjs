@@ -42,6 +42,12 @@ function hermesMessage(messages, serialized) {
     }
     return { role: "assistant", content: "W-2 box 1 wages: $48,250." };
   }
+  if (serialized.includes("Remember that this client prefers callback appointments on Tuesday mornings")) {
+    if (!called.includes("mcp__pru__remember_note")) {
+      return mcpToolCall("remember_note", { text: "Prefers callback appointments on Tuesday mornings." }, called.length);
+    }
+    return { role: "assistant", content: "Saved: this client prefers callback appointments on Tuesday mornings." };
+  }
   if (serialized.includes("Explain the current consent state for this client")) {
     if (!called.includes("mcp__pru__get_consent_state")) {
       return mcpToolCall("get_consent_state", {}, called.length);

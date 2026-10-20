@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
+import type { AgentNote, ChatResponse, ChatStep, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
 
 const PURPOSE = "prepare this synthetic tax client's return";
 const TEST_PIN = "53179";
@@ -9,6 +9,9 @@ const PRESETS = [
   "Draft an email to the client asking for their 1099-INT",
   "What is this client's SSN and filing status?",
   "Email this client's W-2 details to marketing@example.com",
+  "Read the client's W-2 and report box 1 wages",
+  "Remember that this client prefers callback appointments on Tuesday mornings",
+  "Explain the current consent state for this client",
 ] as const;
 const LOCAL_PROGRESS = "Local Nemotron Nano 4B is reading this on the server CPU, first answer can take about 30 s";
 
@@ -90,9 +93,26 @@ function SquashButton({ children, tone = "plum", ...props }: React.ButtonHTMLAtt
   return <button className={`squash squash-${tone}`} {...props}>{children}</button>;
 }
 
+// Where each ledger row's data went, in the gateway's own route names. An agent tool result
+// enters the agent's context; it reaches Token Factory only inside a later model call row.
+const ROUTES: Record<string, { label: string; tone: string }> = {
+  local: { label: "● LOCAL", tone: "route-local" },
+  token_factory: { label: "↗ TOKEN FACTORY", tone: "route-cloud" },
+  dynamic: { label: "↻ AGENT CONTEXT", tone: "route-agent" },
+  dry_run: { label: "◌ DRY RUN", tone: "route-agent" },
+  gateway: { label: "● IN PRU", tone: "route-local" },
+};
+
 function RouteBadge({ route }: Readonly<{ route: string }>) {
-  const local = route === "local";
-  return <span className={`route-badge ${local ? "route-local" : "route-cloud"}`}>{local ? "● LOCAL" : "↗ TOKEN FACTORY"}</span>;
+  const known = ROUTES[route] ?? { label: route.replaceAll("_", " ").toUpperCase(), tone: "route-agent" };
+  return <span className={`route-badge ${known.tone}`}>{known.label}</span>;
+}
+
+// One row of the turn's trace: a hosted or local model call, or a tool the agent ran through Pru.
+function stepTitle(step: ChatStep): string {
+  if (step.tool_name) return `Tool: ${step.tool_name}`;
+  if (step.kind === "model" || step.route === "token_factory" || step.route === "local") return "Model call";
+  return step.kind.replaceAll("_", " ");
 }
 
 function decisionLabel(decision: string): string {
@@ -112,6 +132,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   const [clientId, setClientId] = useState("");
   const [consents, setConsents] = useState<Consent[]>([]);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [notes, setNotes] = useState<AgentNote[]>([]);
   const [turn, setTurn] = useState<ChatResponse | null>(null);
   const [message, setMessage] = useState<string>(PRESETS[0]);
   const [kind, setKind] = useState<"use" | "disclose">("use");
@@ -121,13 +142,17 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
 
   const selected = useMemo(() => clients.find((client) => client.id === clientId), [clients, clientId]);
 
-  const refreshClient = useCallback(async (id: string) => {
-    const [nextConsents, nextLedger] = await Promise.all([
-      api<Consent[]>(`v1/clients/${id}/consents`),
+  // The public demo allows 30 requests a minute per workspace, so each action refetches only what
+  // it can have changed: a chat turn never changes consent, and only remember_note changes notes.
+  const refreshClient = useCallback(async (id: string, parts: { consents?: boolean; notes?: boolean } = { consents: true }) => {
+    const [nextConsents, nextLedger, nextNotes] = await Promise.all([
+      parts.consents ? api<Consent[]>(`v1/clients/${id}/consents`) : Promise.resolve(null),
       api<LedgerEntry[]>(`v1/clients/${id}/ledger`),
+      parts.notes ? api<AgentNote[]>(`v1/clients/${id}/notes`) : Promise.resolve(null),
     ]);
-    setConsents(nextConsents);
+    if (nextConsents) setConsents(nextConsents);
     setLedger(nextLedger);
+    if (nextNotes) setNotes(nextNotes);
   }, []);
 
   useEffect(() => {
@@ -138,7 +163,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
         setClients(nextClients);
         const first = nextClients[0]?.id ?? "";
         setClientId(first);
-        if (first) await refreshClient(first);
+        if (first) await refreshClient(first, { consents: true, notes: true });
         if (active) setStatus("Test data ready");
       })
       .catch((error: Error) => active && setStatus(error.message));
@@ -150,7 +175,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     setTurn(null);
     setStatus("Loading client boundary");
     try {
-      await refreshClient(id);
+      await refreshClient(id, { consents: true, notes: true });
       setStatus("Client boundary loaded");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
@@ -171,7 +196,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
         setStatus(localTurn ? LOCAL_PROGRESS : progress);
       });
       setTurn(response);
-      await refreshClient(clientId);
+      await refreshClient(clientId, { notes: response.steps.some((step) => step.tool_name === "remember_note") });
       setStatus("Turn complete");
     } catch (error) {
       setTurn(null);
@@ -229,6 +254,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       const first = nextClients[0]?.id ?? "";
       setClientId(first);
       setTurn(null);
+      setNotes([]);
       if (first) await refreshClient(first);
       setStatus("Test data reset");
     } catch (error) {
@@ -284,21 +310,31 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
           {turn && (
             <article className="answer" aria-label="Assistant result">
               <p className="eyebrow">ASSISTANT ANSWER</p>
+              {turn.agent ? <p className="agent-line" data-agent>Answered by {turn.agent.name} {turn.agent.version}</p> : null}
               <p>{turn.answer}</p>
-              <div className="step-list">
+              <p className="eyebrow">WHAT HAPPENED, IN ORDER</p>
+              <ol className="step-list" aria-label="Turn trace">
                 {turn.steps.map((step) => (
-                  <div className="step" key={step.ledger_entry_id}>
-                    <div><RouteBadge route={step.route} /><strong>{decisionLabel(step.decision)}</strong></div>
+                  <li className="step" key={step.ledger_entry_id} data-step={step.tool_name ?? step.kind}>
+                    <div>
+                      <RouteBadge route={step.route} />
+                      <strong>{decisionLabel(step.decision)}</strong>
+                      <span className="step-title">{stepTitle(step)}</span>
+                      {step.dry_run ? <span className="dry-run">DRY RUN, NOTHING SENT</span> : null}
+                    </div>
                     <p>{step.policy_reason}</p>
+                    {step.redacted_spans ? (
+                      <p className="redacted">{step.redacted_spans} sensitive {step.redacted_spans === 1 ? "span was" : "spans were"} removed before this call.</p>
+                    ) : null}
                     <dl>
                       <div><dt>Model</dt><dd>{step.model_id ?? "none"}</dd></div>
                       <div><dt>Latency</dt><dd>{step.latency_ms} ms</dd></div>
                       <div><dt>Tokens</dt><dd>{step.input_tokens} in / {step.output_tokens} out</dd></div>
                       <div><dt>Cost</dt><dd>${step.cost_usd.toFixed(8)}</dd></div>
                     </dl>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ol>
             </article>
           )}
         </SectionCard>
@@ -327,6 +363,22 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
                 {!consent.revoked && <SquashButton tone="wax" onClick={() => void revokeConsent(consent.id)} disabled={busy}>Revoke</SquashButton>}
               </article>
             ))}
+          </div>
+          <div className="memory" aria-label="What Pru remembers about this client">
+            <p className="eyebrow">WHAT PRU REMEMBERS ABOUT THIS CLIENT</p>
+            {notes.length === 0 ? (
+              <p className="empty">No notes yet. Ask Pru to remember something about this client.</p>
+            ) : (
+              <ul>
+                {notes.map((note) => (
+                  <li key={note.id} data-note>
+                    <p>{note.text}</p>
+                    <span className="hash">Ledger entry {note.ledger_entry_id}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="small-note">Notes stay in this browser workspace, one client at a time, and Reset demo clears them.</p>
           </div>
         </SectionCard>
 

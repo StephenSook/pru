@@ -74,6 +74,7 @@ form select, form input { width: 100%; }
 .route-badge { display: inline-block; font-size: 10px; font-weight: 950; letter-spacing: .08em; padding: 6px 8px 5px; border-radius: 999px; white-space: nowrap; }
 .route-local { background: var(--sage); color: var(--ink); }
 .route-cloud { background: #e9dafe; color: #35204e; }
+.route-agent { background: #fdebc8; color: #3d2a0a; }
 dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0 0; }
 dl div { min-width: 0; }
 dt { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #687184; }
@@ -123,3 +124,12 @@ footer p { color: #66707f; }
   .section-card { animation: settle .45s ease-out both; }
   @keyframes settle { from { opacity: 0; transform: translateY(8px); } }
 }
+
+.agent-line { font-size: 0.85rem; font-weight: 700; margin: 0.25rem 0 0.5rem; }
+.step-list { list-style: none; padding: 0; }
+.step-title { font-weight: 700; margin-left: 0.5rem; }
+.dry-run { margin-left: 0.5rem; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.04em; border: 2px solid currentColor; border-radius: 999px; padding: 0.05rem 0.45rem; }
+.redacted { font-size: 0.85rem; font-weight: 700; }
+.memory { margin-top: 1.25rem; border-top: 2px solid currentColor; padding-top: 0.9rem; }
+.memory ul { list-style: none; padding: 0; margin: 0.5rem 0; display: grid; gap: 0.5rem; }
+.memory li p { margin: 0; font-weight: 600; }

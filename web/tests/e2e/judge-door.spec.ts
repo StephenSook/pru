@@ -1,11 +1,12 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const emailPrompt = "Draft an email to the client asking for their 1099-INT";
 const localPrompt = "What is this client's SSN and filing status?";
 const deniedPrompt = "Email this client's W-2 details to marketing@example.com";
 const readW2Prompt = "Read the client's W-2 and report box 1 wages";
 const consentStatePrompt = "Explain the current consent state for this client";
+const rememberPrompt = "Remember that this client prefers callback appointments on Tuesday mornings";
 
 type FakeHermesStats = {
   receivedSessions: string[];
@@ -89,6 +90,32 @@ test("replays the Hermes W-2 alias and MCP structured-content regressions", asyn
   await page.getByLabel("One assistant turn").fill(consentStatePrompt);
   await page.getByRole("button", { name: "Run this turn" }).click();
   await expect(page.getByLabel("Assistant result")).toContainText("consent state was retrieved");
+});
+
+test("shows the agent, every traced step, and what Pru now remembers", async ({ page }) => {
+  await page.getByLabel("Consent kind").selectOption("use");
+  await page.getByRole("button", { name: "Mint test consent" }).click();
+  await expect(page.getByText("Test consent active")).toBeVisible();
+  await expect(page.getByLabel("What Pru remembers about this client")).toContainText("No notes yet.");
+
+  await page.getByRole("button", { name: rememberPrompt }).click();
+  const result = page.getByLabel("Assistant result");
+  await expect(result).toContainText("Saved: this client prefers callback appointments");
+  await expect(result.locator("[data-agent]")).toHaveText(/^Answered by Hermes Agent \S+$/);
+  const trace = page.getByRole("list", { name: "Turn trace" });
+  await expect(trace.locator("[data-step='remember_note']")).toContainText("Tool: remember_note");
+  await expect(trace.locator("[data-step='remember_note']")).toContainText("ALLOWED");
+
+  const memory = page.getByLabel("What Pru remembers about this client");
+  await expect(memory.locator("[data-note]")).toHaveCount(1);
+  await expect(memory.locator("[data-note]")).toContainText("Prefers callback appointments on Tuesday mornings.");
+
+  const axe = await new AxeBuilder({ page }).analyze();
+  expect(axe.violations).toEqual([]);
+
+  await page.getByRole("button", { name: "Reset demo" }).click();
+  await expect(page.getByText("Test data reset")).toBeVisible();
+  await expect(memory.locator("[data-note]")).toHaveCount(0);
 });
 
 for (const width of [390, 768, 1024, 1440]) {
