@@ -63,7 +63,7 @@ export function RecordedTurn() {
           : `${summary.decision}: ${RECORDED.prompt.text}`}
       </h3>
       <p className="recorded-why">
-        Before this request the eval recorded a use consent and a disclose consent naming {recipient}
+        Before this request the eval recorded a use consent and a disclose consent naming {recipient}{" "}
         ({RECORDED.eval_setup.source}). Without the disclose consent the gateway refuses the draft.
       </p>
       <p className="recorded-answer" data-recorded-answer>{RECORDED.turn.answer}</p>

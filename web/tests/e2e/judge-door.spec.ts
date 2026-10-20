@@ -118,6 +118,33 @@ test("shows the agent, every traced step, and what Pru now remembers", async ({ 
   await expect(memory.locator("[data-note]")).toHaveCount(0);
 });
 
+test("shows a recorded turn on load and brings a finished turn into view on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const recorded = page.getByRole("article", { name: "Recorded turn" });
+  await expect(recorded).toContainText("Recorded 2026-10-20 from eval/hermes_turns-2026-10-20.json");
+
+  const consentOnFile = page.locator("[data-consent-on-file]");
+  await expect(consentOnFile).toContainText("None.");
+  await consentOnFile.getByRole("button", { name: "Record a use consent" }).click();
+  await expect(page.getByText("Test consent active")).toBeVisible();
+  await expect(consentOnFile).toContainText("use");
+
+  // The first preset is six cells above the result box, so only the page's own scroll can bring
+  // the result into view once the turn finishes.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.getByRole("button", { name: emailPrompt }).click();
+  const result = page.getByLabel("Assistant result");
+  await expect(result).toBeVisible();
+  await expect(recorded).toHaveCount(0);
+  // The result's top edge, where its headline sits, must be on screen: a sliver of the box
+  // showing at the bottom of the viewport is not enough.
+  await expect.poll(() => result.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    return top >= -1 && top <= window.innerHeight - 120;
+  })).toBe(true);
+  await expect(result).toBeFocused();
+});
+
 for (const width of [390, 768, 1024, 1440]) {
   test(`has no horizontal overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });

@@ -1,19 +1,41 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentNote, ChatResponse, Consent, DemoClient, LedgerEntry } from "@/lib/contracts";
 import { decisionLabel, fromChatStep } from "@/lib/turn";
 import { RecordedTurn, RouteBadge, TraceList } from "@/ui/Turn";
 
 const PURPOSE = "prepare this synthetic tax client's return";
 const TEST_PIN = "53179";
-const PRESETS = [
-  "Draft an email to the client asking for their 1099-INT",
-  "Check this client's SSN against the W-2 with the local model.",
-  "Email this client's W-2 details to marketing@example.com",
-  "Read the client's W-2 and report box 1 wages",
-  "Remember that this client prefers callback appointments on Tuesday mornings",
-  "Explain the current consent state for this client",
+
+// Each preset says what the gateway will do with it, in the terms of its own rules: a draft needs a
+// disclose consent naming the recipient and is never sent, an SSN may only go to the local model,
+// and tool results have the SSN removed before the agent reads them.
+export const PRESETS = [
+  {
+    prompt: "Draft an email to the client asking for their 1099-INT",
+    outcome: "Needs a disclose consent naming the client's email. Then drafted, never sent.",
+  },
+  {
+    prompt: "Check this client's SSN against the W-2 with the local model.",
+    outcome: "The SSN check runs on the local Nemotron 3 Nano 4B. The SSN never goes to Token Factory.",
+  },
+  {
+    prompt: "Email this client's W-2 details to marketing@example.com",
+    outcome: "Blocked unless a disclose consent names marketing@example.com.",
+  },
+  {
+    prompt: "Read the client's W-2 and report box 1 wages",
+    outcome: "The SSN is removed from the W-2 before Token Factory reads it.",
+  },
+  {
+    prompt: "Remember that this client prefers callback appointments on Tuesday mornings",
+    outcome: "Saved as a note in this client's file, with a ledger entry.",
+  },
+  {
+    prompt: "Explain the current consent state for this client",
+    outcome: "Reads the consents on file and explains them.",
+  },
 ] as const;
 const LOCAL_PROGRESS = "If this needs the SSN, local Nemotron Nano 4B reads it on the server CPU. A first local answer can take about 30 s";
 
@@ -74,16 +96,17 @@ async function api<T>(
   return body;
 }
 
-function SectionCard({ eyebrow, title, children, className = "" }: Readonly<{
-  eyebrow: string;
+// One part of the form: a reversed "Part" tab and its title, the way a return divides its pages.
+function Part({ numeral, title, id, className = "", children }: Readonly<{
+  numeral: string;
   title: string;
-  children: React.ReactNode;
+  id: string;
   className?: string;
+  children: React.ReactNode;
 }>) {
   return (
-    <section className={`section-card ${className}`}>
-      <p className="eyebrow">{eyebrow}</p>
-      <h2>{title}</h2>
+    <section className={`part ${className}`} aria-labelledby={id}>
+      <h2 id={id} className="part-head"><span className="part-tab">Part {numeral}</span>{title}</h2>
       {children}
     </section>
   );
@@ -95,11 +118,14 @@ function SquashButton({ children, tone = "plum", ...props }: React.ButtonHTMLAtt
   return <button className={`squash squash-${tone}`} {...props}>{children}</button>;
 }
 
-
 export function localModelLocation(hosted: boolean): string {
   return hosted
     ? "this server's own model, never sent to a model provider"
     : "this PC's own model, never sent to a model provider";
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
 export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
@@ -109,13 +135,25 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [notes, setNotes] = useState<AgentNote[]>([]);
   const [turn, setTurn] = useState<ChatResponse | null>(null);
-  const [message, setMessage] = useState<string>(PRESETS[0]);
+  const [message, setMessage] = useState<string>(PRESETS[0].prompt);
   const [kind, setKind] = useState<"use" | "disclose">("use");
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("Loading test clients");
+  const resultRef = useRef<HTMLElement>(null);
 
   const selected = useMemo(() => clients.find((client) => client.id === clientId), [clients, clientId]);
+  const activeConsents = consents.filter((consent) => !consent.revoked);
+
+  // When a turn finishes, bring its result into view and move focus to it, so a phone user who
+  // tapped a preset above the fold sees the answer without hunting for it.
+  useEffect(() => {
+    if (!turn) return;
+    const result = resultRef.current;
+    if (!result) return;
+    result.focus({ preventScroll: true });
+    result.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, [turn]);
 
   // The public demo allows 30 requests a minute per workspace, so each action refetches only what
   // it can have changed: a chat turn never changes consent, and only remember_note changes notes.
@@ -181,8 +219,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     }
   }
 
-  async function mintConsent(event: FormEvent) {
-    event.preventDefault();
+  async function recordConsent(nextKind: "use" | "disclose", nextRecipient: string | null) {
     if (!clientId || busy) return;
     setBusy(true);
     setStatus("Minting test consent");
@@ -190,8 +227,8 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
       await api<Consent>(`v1/clients/${clientId}/consents`, {
         method: "POST",
         body: JSON.stringify({
-          kind,
-          recipient: kind === "disclose" ? recipient : null,
+          kind: nextKind,
+          recipient: nextKind === "disclose" ? nextRecipient : null,
           purpose: PURPOSE,
           expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
           pin: TEST_PIN,
@@ -204,6 +241,11 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function mintConsent(event: FormEvent) {
+    event.preventDefault();
+    void recordConsent(kind, recipient);
   }
 
   async function revokeConsent(id: string) {
@@ -241,62 +283,99 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
 
   return (
     <main>
-      <header className="hero">
-        <div className="mark" aria-label="Pru"><span>P</span></div>
-        <div className="hero-copy">
-          <p className="eyebrow">PRIVATE AI, VISIBLE DECISIONS</p>
-          <h1>Personal data stays close.<br />Useful work still gets done.</h1>
-          <p className="dek">Watch Pru route SSN-bearing context to a local NVIDIA model and consented, SSN-free work to Nemotron on Nebius Token Factory.</p>
+      <header className="form-head">
+        <p className="form-number"><span className="form-word">Form</span><span className="form-name">Pru</span></p>
+        <div className="form-title">
+          <h1>Pru checks every AI request against the client&apos;s signed consent.</h1>
+          <p className="dek">Work that names the SSN stays on a local NVIDIA Nemotron 3 Nano 4B. Consented work with the SSN removed goes to Nemotron 3.5 Lightning on Nebius Token Factory. Every decision is written to the client&apos;s ledger.</p>
         </div>
-        <div className="hero-actions">
-          <span className="stamp">TEST DATA</span>
+        <div className="form-corner">
+          <p className="test-only">Test data only</p>
           <SquashButton tone="paper" onClick={resetDemo} disabled={busy}>Reset demo</SquashButton>
         </div>
       </header>
 
-      <div className="legal-note">
-        <strong>PUBLIC DEMO.</strong> This demo accepts test clients only. An unused browser workspace expires after 10 idle minutes. After you mint consent or run chat, it expires after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
-      </div>
+      <p className="legal-note">
+        <strong>Public demo.</strong> This demo accepts test clients only. An unused browser workspace expires after 10 idle minutes. After you mint consent or run chat, it expires after one idle hour. Do not enter real taxpayer data. Pru refuses it under 26 U.S.C. 7216.
+      </p>
 
       <section className="client-strip" aria-label="Select a test client">
-        <label htmlFor="client">Client boundary</label>
-        <select id="client" value={clientId} onChange={(event) => void selectClient(event.target.value)} disabled={busy}>
-          {clients.map((client) => <option key={client.id} value={client.id}>{client.name} · TEST DATA</option>)}
-        </select>
-        <span className="client-email">{selected?.email}</span>
-        <p className="status" aria-live="polite">{status}</p>
+        <div className="box box-client">
+          <label className="box-label" htmlFor="client">Client boundary</label>
+          <select id="client" value={clientId} onChange={(event) => void selectClient(event.target.value)} disabled={busy}>
+            {clients.map((client) => <option key={client.id} value={client.id}>{client.name} (test data)</option>)}
+          </select>
+        </div>
+        <div className="box">
+          <span className="box-label">Email on file</span>
+          <span className="typed client-email">{selected?.email}</span>
+        </div>
+        <div className="box box-consent" data-consent-on-file>
+          <span className="box-label">Consent on file</span>
+          {activeConsents.length === 0 ? (
+            <span className="consent-none">
+              <span>None. Pru refuses every request until one is recorded.</span>
+              <button type="button" className="inline-action" onClick={() => void recordConsent("use", null)} disabled={busy || !clientId}>
+                Record a use consent
+              </button>
+            </span>
+          ) : (
+            <span className="typed">
+              {activeConsents.map((consent) => (consent.kind === "disclose" ? `disclose to ${consent.recipient}` : "use")).join("; ")}
+            </span>
+          )}
+        </div>
+        <div className="box box-status">
+          <span className="box-label">Status</span>
+          <p className="status" aria-live="polite">{status}</p>
+        </div>
       </section>
 
-      <div className="workspace">
-        <SectionCard eyebrow="01 · TRY THE BOUNDARY" title="Ask Pru" className="chat-card">
-          <p className="route-note">
-            <strong>LOCAL:</strong> {localModelLocation(hosted)}
-          </p>
-          <div className="presets">
-            {PRESETS.map((preset, index) => (
-              <button key={preset} type="button" onClick={() => void sendMessage(preset)} disabled={busy}>
-                <span>0{index + 1}</span>{preset}
-              </button>
-            ))}
+      <Part numeral="I" title="Ask Pru about this client" id="part-ask" className="part-ask">
+        <div className="ask-grid">
+          <div className="ask-controls">
+            <p className="route-note">
+              <strong>Local model:</strong> {localModelLocation(hosted)}
+            </p>
+            <div className="presets">
+              {PRESETS.map((preset, index) => (
+                <button
+                  key={preset.prompt}
+                  type="button"
+                  className="preset"
+                  onClick={() => void sendMessage(preset.prompt)}
+                  disabled={busy}
+                  aria-labelledby={`preset-${index}`}
+                  aria-describedby={`preset-${index}-outcome`}
+                >
+                  <span className="preset-prompt" id={`preset-${index}`}>{preset.prompt}</span>
+                  <span className="preset-outcome" id={`preset-${index}-outcome`}>{preset.outcome}</span>
+                </button>
+              ))}
+            </div>
+            <label className="field-label" htmlFor="message">One assistant turn</label>
+            <textarea id="message" maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} />
+            <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
           </div>
-          <label className="field-label" htmlFor="message">One assistant turn</label>
-          <textarea id="message" maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} />
-          <SquashButton onClick={() => void sendMessage()} disabled={busy || !clientId}>{busy ? "Working…" : "Run this turn"}</SquashButton>
-          {turn ? (
-            <article className="answer" aria-label="Assistant result">
-              <p className="eyebrow">ASSISTANT ANSWER</p>
-              {turn.agent ? <p className="agent-line" data-agent>Answered by {turn.agent.name} {turn.agent.version}</p> : null}
-              <p>{turn.answer}</p>
-              <p className="eyebrow">WHAT HAPPENED, IN ORDER</p>
-              <TraceList steps={turn.steps.map(fromChatStep)} label="Turn trace" />
-            </article>
-          ) : (
-            <RecordedTurn />
-          )}
-        </SectionCard>
+          <div className="ask-result">
+            {turn ? (
+              <article className="answer" aria-label="Assistant result" ref={resultRef} tabIndex={-1}>
+                <p className="eyebrow">Assistant answer</p>
+                {turn.agent ? <p className="agent-line" data-agent>Answered by {turn.agent.name} {turn.agent.version}</p> : null}
+                <p>{turn.answer}</p>
+                <p className="eyebrow">What happened, in order</p>
+                <TraceList steps={turn.steps.map(fromChatStep)} label="Turn trace" />
+              </article>
+            ) : (
+              <RecordedTurn />
+            )}
+          </div>
+        </div>
+      </Part>
 
-        <SectionCard eyebrow="02 · CLIENT PERMISSION" title="Consent ledger" className="consent-card">
-          <form onSubmit={(event) => void mintConsent(event)}>
+      <div className="lower-parts">
+        <Part numeral="II" title="Consent ledger" id="part-consent" className="consent-card">
+          <form onSubmit={mintConsent}>
             <label className="field-label" htmlFor="kind">Consent kind</label>
             <select id="kind" value={kind} onChange={(event) => {
               const next = event.target.value as "use" | "disclose";
@@ -307,7 +386,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
               <option value="disclose">disclose</option>
             </select>
             {kind === "disclose" && <><label className="field-label" htmlFor="recipient">Recipient</label><input id="recipient" value={recipient} onChange={(event) => setRecipient(event.target.value)} required /></>}
-            <div className="pin-slip"><span>TEST ONLY PIN</span><strong>{TEST_PIN}</strong></div>
+            <div className="pin-slip"><span>Test only PIN</span><strong>{TEST_PIN}</strong></div>
             <SquashButton type="submit" disabled={busy || !clientId}>Mint test consent</SquashButton>
           </form>
           <div className="consent-list">
@@ -321,7 +400,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
             ))}
           </div>
           <div className="memory" aria-label="What Pru remembers about this client">
-            <p className="eyebrow">WHAT PRU REMEMBERS ABOUT THIS CLIENT</p>
+            <h3 className="sub-head">What Pru remembers about this client</h3>
             {notes.length === 0 ? (
               <p className="empty">No notes yet. Ask Pru to remember something about this client.</p>
             ) : (
@@ -336,9 +415,9 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
             )}
             <p className="small-note">Notes stay in this browser workspace, one client at a time, and Reset demo clears them.</p>
           </div>
-        </SectionCard>
+        </Part>
 
-        <SectionCard eyebrow="03 · EVERY DECISION" title="Egress ledger" className="ledger-card">
+        <Part numeral="III" title="Egress ledger" id="part-ledger" className="ledger-card">
           <p className="small-note">Newest first. The keyed span hash proves the same sensitive span was seen without storing its value.</p>
           <div className="ledger-list">
             {ledger.length === 0 && <p className="empty">Run a prompt to create a decision entry.</p>}
@@ -355,17 +434,17 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
               </article>
             ))}
           </div>
-        </SectionCard>
+        </Part>
       </div>
 
-      <SectionCard eyebrow="04 · EVIDENCE, NOT A PROMISE" title="What is proved" className="proof-card">
+      <Part numeral="IV" title="What is proved" id="part-proof" className="proof-card">
         <div className="proof-grid">
           <a href="https://github.com/StephenSook/pru/actions/workflows/ci.yml" target="_blank" rel="noreferrer"><strong>SymCC + cvc5</strong><span>Finds policy divergence and proves the concrete witness.</span></a>
           <a href="https://github.com/StephenSook/pru/blob/main/eval/boundaries/synthetic-client.yaml" target="_blank" rel="noreferrer"><strong>OpenShell boundary</strong><span>Host and sandbox probes produce the committed boundary receipt.</span></a>
           <a href="https://github.com/StephenSook/pru/blob/main/eval/ssn_canaries.json" target="_blank" rel="noreferrer"><strong>SSN canaries</strong><span>360 of 360 positives detected. 0 of 120 negative controls flagged.</span></a>
         </div>
         <p className="not-proved"><strong>What is not proved:</strong> It does not prove that the gateway&apos;s context labels are truthful.</p>
-      </SectionCard>
+      </Part>
 
       <footer><span>Pru</span><p>One client boundary at a time.</p></footer>
     </main>
