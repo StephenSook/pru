@@ -86,7 +86,8 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Hermes upstream image pin | `"nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919"` | `Dockerfile` first stage | MEASURED |
 | Hermes Unix identity | `"uid 10000, gid 10000"` | `Dockerfile` (`useradd`); `docker/entrypoint.sh` (`setpriv`) | MEASURED |
 | Hermes jail receipt | `"Landlock enforced (ABI 7)"` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.environment.health.jail` | MEASURED |
-| Hermes network permission | `"TCP connect to port 8787 only"` | `docker/entrypoint.sh` (`pru-agent-jail --connect-port 8787`); launcher enforcement test | MEASURED |
+| Hermes network permission | `"TCP connect to port 8787 only"` | `docker/entrypoint.sh` (`pru-agent-jail --connect-port 8787`); launcher enforcement test. Landlock names a port, not a host, so the rule is port 8787 on any address | MEASURED |
+| Hermes socket filter | `"UDP, raw and packet sockets and io_uring refused with EPERM"` | `crates/pru-agent-jail/src/main.rs` (`socket_filter`); enforcement test asserts EPERM for IPv4 and IPv6 UDP; container smoke health reads `Landlock enforced (ABI 7) + seccomp socket filter` | MEASURED |
 | Hermes MCP tool count | `7` | `crates/pru-gateway/src/mcp.rs` (`MCP_TOOL_NAMES`); exact-list integration test | MEASURED |
 | Hermes built-in model catalog, tool search, and memory | `"disabled"` | `docker/hermes-config.yaml` (`discover_models`, `tool_search`, `memory`, `model_catalog`) | MEASURED |
 | Keyless container agent | `"built-in Rust loop (no Token Factory key)"` | `docker/entrypoint.sh` | MEASURED |
@@ -167,8 +168,8 @@ Spike notes live in the sibling gitignored tree `../pru/spike/` (this repository
 | Cedar live policy implies reference R | `"2 SymCC tests passed with cvc5 1.3.1"` | command: `powershell -File scripts/run-symcc.ps1`; tests are `crates/pru-policy/tests/symcc.rs` with `required-features = ["symcc"]` | MEASURED |
 | cvc5 pin | `"1.3.1"` | `scripts/install-cvc5.sh:5`; checksum `1a1cda20d2df4938fa4944a69f33ddc9172e319ece0eed0aa09c4d7abede3ed1` at line 7 | MEASURED |
 | cedar-policy-symcc pin | `"0.7.0"` | `crates/pru-policy/Cargo.toml:19` | MEASURED |
-| CPU Docker first-token times from README | `"19.1551 / 11.7070 / 8.3718 s"` | README.md:57-59; no committed receipt under `eval/` | NOT VERIFIED |
-| CPU Docker output speed from README | `"2.9792 / 0.9256 / 3.4185 tokens/s"` | README.md:57-59; check: `docker exec pru-phase-b1 node /app/benchmark-local-model.mjs` | NOT VERIFIED |
+| CPU Docker first-token times from an earlier README | `"19.1551 / 11.7070 / 8.3718 s"` | The current README no longer prints them; no committed receipt under `eval/` | NOT VERIFIED |
+| CPU Docker output speed from an earlier README | `"2.9792 / 0.9256 / 3.4185 tokens/s"` | The current README no longer prints them; check: `docker exec pru-phase-b1 node /app/benchmark-local-model.mjs` | NOT VERIFIED |
 | Chat max input characters | `4000` | `crates/pru-gateway/src/chat.rs:12` | MEASURED |
 | Chat max model calls | `4` | `crates/pru-gateway/src/chat.rs:13` | MEASURED |
 | Chat max tool calls | `4` | `crates/pru-gateway/src/chat.rs:14` | MEASURED |
@@ -230,7 +231,7 @@ All five CI job semantics ran on this machine. These exact Linux wrapper entry p
 - The OpenShell YAML template means Hermes or NemoClaw execute in the container. Neither does.
 - The chat `cost_usd` figure is a live Nebius Token Factory invoice. It is the code formula in `crates/pru-gateway/src/chat.rs` using NOT VERIFIED rates.
 - Super passed or was rerun after the repaired gate. Lightning passed at 27 of 30, so the decision rule skipped Super.
-- The CPU Docker benchmark numbers in README.md:57-60 were re-measured in this session.
+- The CPU Docker benchmark numbers from the earlier README were re-measured in this session.
 - IRS ATS public test taxpayers are committed in this repository. Only synthetic canaries and two demo clients are.
 
 ## Drift found
