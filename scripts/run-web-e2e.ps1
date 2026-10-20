@@ -109,7 +109,7 @@ try {
         -FilePath $node `
         -ArgumentList @('node_modules/next/dist/bin/next', 'start') `
         -WorkingDirectory (Join-Path $repoRoot 'web') `
-        -Environment @{ PRU_GATEWAY_URL = 'http://127.0.0.1:8787' } `
+        -Environment @{ PRU_GATEWAY_URL = 'http://127.0.0.1:8787'; PRU_TRUSTED_CLIENT_IP_HEADER = 'x-forwarded-for' } `
         -LogName 'web'
 
     Wait-Ready -Name 'mock OpenAI server' -Url 'http://127.0.0.1:8082/health' -Process $mock

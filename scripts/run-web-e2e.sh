@@ -44,7 +44,7 @@ NEBIUS_API_KEY=ci-test-key \
 target/debug/pru-gateway >"$run_dir/gateway.log" 2>&1 &
 gateway_pid=$!
 
-PRU_GATEWAY_URL=http://127.0.0.1:8787 pnpm --dir web start >"$run_dir/web.log" 2>&1 &
+PRU_GATEWAY_URL=http://127.0.0.1:8787 PRU_TRUSTED_CLIENT_IP_HEADER=x-forwarded-for pnpm --dir web start >"$run_dir/web.log" 2>&1 &
 web_pid=$!
 
 wait_for() {
