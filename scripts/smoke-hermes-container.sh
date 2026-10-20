@@ -174,4 +174,14 @@ MSYS_NO_PATHCONV=1 docker exec --user 10000:10000 "${app}" env -u NEBIUS_API_KEY
   [ "${found}" = "1" ]
 '
 
-echo "Hermes container smoke passed: ${permissions}; ${health_json}"
+# The same launcher Hermes runs under must refuse every socket but Unix sockets and TCP streams.
+socket_check="$(MSYS_NO_PATHCONV=1 docker exec -i --user 10000:10000 "${app}" sh -c \
+  'dir="$(mktemp -d)" && exec pru-agent-jail --write-dir "${dir}" --connect-port 8787 -- python3 -' \
+  < "${repo_root}/scripts/jail-socket-check.py")"
+socket_check="${socket_check//$'\r'/}"
+if [ "${socket_check}" != "jail-socket-check ok" ]; then
+  echo "Jail socket check failed: ${socket_check}" >&2
+  exit 1
+fi
+
+echo "Hermes container smoke passed: ${permissions}; ${socket_check}; ${health_json}"

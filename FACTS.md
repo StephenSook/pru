@@ -87,7 +87,7 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Hermes Unix identity | `"uid 10000, gid 10000"` | `Dockerfile` (`useradd`); `docker/entrypoint.sh` (`setpriv`) | MEASURED |
 | Hermes jail receipt | `"Landlock enforced (ABI 7)"` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.environment.health.jail` | MEASURED |
 | Hermes network permission | `"TCP connect to port 8787 only"` | `docker/entrypoint.sh` (`pru-agent-jail --connect-port 8787`); launcher enforcement test. Landlock names a port, not a host, so the rule is port 8787 on any address | MEASURED |
-| Hermes socket filter | `"UDP, raw and packet sockets and io_uring refused with EPERM"` | `crates/pru-agent-jail/src/main.rs` (`socket_filter`); enforcement test asserts EPERM for IPv4 and IPv6 UDP; container smoke health reads `Landlock enforced (ABI 7) + seccomp socket filter` | MEASURED |
+| Hermes socket filter | `"only Unix sockets and IPv4 or IPv6 TCP streams; every other socket and io_uring refused with EPERM"` | `crates/pru-agent-jail/src/main.rs` (`socket_filter`, native and x32 syscall numbers); enforcement test asserts EPERM for IPv4 and IPv6 UDP; `scripts/jail-socket-check.py` in the container smoke checks UDP, raw, SCTP, MPTCP, netlink, packet and x32 UDP | MEASURED |
 | Hermes MCP tool count | `7` | `crates/pru-gateway/src/mcp.rs` (`MCP_TOOL_NAMES`); exact-list integration test | MEASURED |
 | Hermes built-in model catalog, tool search, and memory | `"disabled"` | `docker/hermes-config.yaml` (`discover_models`, `tool_search`, `memory`, `model_catalog`) | MEASURED |
 | Keyless container agent | `"built-in Rust loop (no Token Factory key)"` | `docker/entrypoint.sh` | MEASURED |

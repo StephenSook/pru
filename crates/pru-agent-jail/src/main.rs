@@ -86,41 +86,57 @@ mod linux {
     const TARGET_ABI: ABI = ABI::V4;
     // socket(2) type values; the low four bits hold the type, the rest are flags.
     const SOCKET_TYPE_MASK: u64 = 0xf;
-    const DENIED_INET_TYPES: [u64; 4] = [
-        libc::SOCK_DGRAM as u64,
-        libc::SOCK_RAW as u64,
-        libc::SOCK_RDM as u64,
-        libc::SOCK_SEQPACKET as u64,
-    ];
+    // x86_64 kernels built with the x32 ABI accept every syscall number with this bit set, and a
+    // filter keyed on the plain number would not see them.
+    #[cfg(target_arch = "x86_64")]
+    const X32_SYSCALL_BIT: i64 = 0x4000_0000;
+
+    fn condition(arg: u8, op: SeccompCmpOp, value: u64) -> Result<SeccompCondition> {
+        Ok(SeccompCondition::new(
+            arg,
+            SeccompCmpArgLen::Dword,
+            op,
+            value,
+        )?)
+    }
 
     // Landlock governs TCP connect and bind only, and its rules name a port, not a host. This
-    // filter closes what Landlock cannot: no UDP (so no DNS or other datagram egress), no raw or
-    // packet sockets, and no io_uring, whose socket operations would bypass a socket(2) filter.
-    // TCP stream sockets stay allowed and Landlock limits their connect to one port.
+    // filter allows only the sockets Landlock can govern plus local Unix sockets: AF_UNIX of any
+    // type, and AF_INET or AF_INET6 stream sockets whose protocol is TCP. Every other socket is
+    // refused with EPERM: UDP (so no DNS or datagram egress), raw, packet, netlink, vsock, and
+    // SCTP or MPTCP streams that Landlock's TCP rule would not cover. io_uring is refused too,
+    // because its socket operations would not pass through socket(2).
     fn socket_filter() -> Result<BpfProgram> {
-        let mut socket_rules = Vec::new();
-        for domain in [libc::AF_INET as u64, libc::AF_INET6 as u64] {
-            for kind in DENIED_INET_TYPES {
-                socket_rules.push(SeccompRule::new(vec![
-                    SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, domain)?,
-                    SeccompCondition::new(
-                        1,
-                        SeccompCmpArgLen::Dword,
-                        SeccompCmpOp::MaskedEq(SOCKET_TYPE_MASK),
-                        kind,
-                    )?,
+        let unix = libc::AF_UNIX as u64;
+        let inet = libc::AF_INET as u64;
+        let inet6 = libc::AF_INET6 as u64;
+        let mut refused = vec![SeccompRule::new(vec![
+            condition(0, SeccompCmpOp::Ne, unix)?,
+            condition(0, SeccompCmpOp::Ne, inet)?,
+            condition(0, SeccompCmpOp::Ne, inet6)?,
+        ])?];
+        for domain in [inet, inet6] {
+            // seccomp has no masked not-equal, so refuse every type value except SOCK_STREAM.
+            for kind in (0..=SOCKET_TYPE_MASK).filter(|kind| *kind != libc::SOCK_STREAM as u64) {
+                refused.push(SeccompRule::new(vec![
+                    condition(0, SeccompCmpOp::Eq, domain)?,
+                    condition(1, SeccompCmpOp::MaskedEq(SOCKET_TYPE_MASK), kind)?,
                 ])?);
             }
+            refused.push(SeccompRule::new(vec![
+                condition(0, SeccompCmpOp::Eq, domain)?,
+                condition(2, SeccompCmpOp::Ne, 0)?,
+                condition(2, SeccompCmpOp::Ne, libc::IPPROTO_TCP as u64)?,
+            ])?);
         }
-        socket_rules.push(SeccompRule::new(vec![SeccompCondition::new(
-            0,
-            SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Eq,
-            libc::AF_PACKET as u64,
-        )?])?);
         let mut rules = BTreeMap::new();
-        rules.insert(libc::SYS_socket, socket_rules);
+        rules.insert(libc::SYS_socket, refused.clone());
         rules.insert(libc::SYS_io_uring_setup, Vec::new());
+        #[cfg(target_arch = "x86_64")]
+        {
+            rules.insert(libc::SYS_socket | X32_SYSCALL_BIT, refused);
+            rules.insert(libc::SYS_io_uring_setup | X32_SYSCALL_BIT, Vec::new());
+        }
         let arch = TargetArch::try_from(std::env::consts::ARCH)
             .map_err(|error| anyhow!("unsupported seccomp architecture: {error:?}"))?;
         let filter = SeccompFilter::new(
