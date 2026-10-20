@@ -13,7 +13,7 @@ describe("measured route trade-offs", () => {
     const local = within(table).getByRole("row", { name: /^Local/ });
     expect(local).toHaveTextContent(`${ENDPOINT_TEST.local.model}`);
     expect(local).toHaveTextContent("11.1 s first, 5.0 s repeat");
-    expect(local).toHaveTextContent("No per-call fee");
+    expect(local).toHaveTextContent("No API fee");
     const hosted = within(table).getByRole("row", { name: /^Token Factory/ });
     expect(hosted).toHaveTextContent(ENDPOINT_TEST.tokenFactory.model);
     expect(hosted).toHaveTextContent("2.9 s, 3 calls of 315 to 640 ms");
@@ -35,6 +35,6 @@ describe("measured route trade-offs", () => {
     );
     expect(localTurnNote(true)).toContain("on this server's CPU");
     const localPreset = PRESETS.find((preset) => preset.prompt.includes("SSN"));
-    expect(localPreset?.outcome).toContain("measured at 5.0 s to 11.1 s a turn");
+    expect(localPreset?.outcome).toContain("measured at 5.0 s to 11.1 s.");
   });
 });

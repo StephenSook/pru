@@ -31,7 +31,7 @@ export const PRESETS = [
   },
   {
     prompt: "Check this client's SSN against the W-2 with the local model.",
-    outcome: `The SSN check runs on the local Nemotron 3 Nano 4B, measured at ${seconds(ENDPOINT_TEST.local.repeatTurnSeconds)} to ${seconds(ENDPOINT_TEST.local.firstTurnSeconds)} a turn. The SSN never goes to Token Factory.`,
+    outcome: `Runs on the local model, measured at ${seconds(ENDPOINT_TEST.local.repeatTurnSeconds)} to ${seconds(ENDPOINT_TEST.local.firstTurnSeconds)}. The SSN never goes to Token Factory.`,
   },
   {
     prompt: "Email this client's W-2 details to marketing@example.com",

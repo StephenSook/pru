@@ -54,7 +54,7 @@ export function RouteTradeoff({ hosted }: Readonly<{ hosted: boolean }>) {
             <th scope="row">Local</th>
             <td>{local.model}</td>
             <td className="typed">{seconds(local.firstTurnSeconds)} first, {seconds(local.repeatTurnSeconds)} repeat</td>
-            <td>No per-call fee</td>
+            <td>No API fee</td>
           </tr>
           <tr data-route-row="token_factory">
             <th scope="row">Token Factory</th>
