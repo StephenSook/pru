@@ -6,7 +6,7 @@ Pru is the Personal AI track entry. The description below is from the shipped co
 
 ## What Pru does
 
-Pru is a tax-practice assistant for a solo preparer or small practice. A Rust gateway is the only permitted egress path. It scans action arguments for SSN-shaped spans, verifies a signed consent token, asks Cedar, and writes a JSONL decision ledger of keyed span hashes. SSN-bearing prompts stay on the machine and go to a local OpenAI-compatible llama-server. Consented SSN-free prompts may go to Nebius Token Factory. Email and calendar tools build dry-run drafts and do not send. A Next.js judge door talks only to a fixed server route that proxies to the gateway. Demo clients are synthetic, labelled test data, and use SSN-shaped values that the Social Security Administration does not issue.
+Pru is a tax-practice assistant for a solo preparer or small practice. Hermes Agent v0.22.2 runs as the keyed container's long-lived agent, while a Rust gateway remains the only permitted model and tool boundary. The gateway scans action arguments for SSN-shaped spans, verifies a signed consent token, asks Cedar, and writes a JSONL decision ledger of keyed span hashes. SSN-bearing work stays on the machine and goes to a local OpenAI-compatible llama-server through one gateway tool. Consented SSN-free prompts may go to Nebius Token Factory. Email and calendar tools build dry-run drafts and do not send. A Next.js judge door talks only to a fixed server route that proxies to the gateway. Demo clients are synthetic, labelled test data, and use SSN-shaped values that the Social Security Administration does not issue.
 
 ## Privacy and consent design
 
@@ -39,7 +39,7 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Ledger stores keyed Blake3 hashes of matched spans | `blake3::keyed_hash(&self.hash_key, span.matched.as_bytes())` | `crates/pru-gateway/src/lib.rs:230-238` | MEASURED |
 | Chat answers redact detected SSNs | `"[SSN kept local]"` | `crates/pru-gateway/src/chat.rs:380-387` | MEASURED |
 | Email and calendar remain dry-run | `"sent": false` | `crates/pru-gateway/tests/gateway.rs:293-295` (`response.dry_run` and `result["sent"] == false`) | MEASURED |
-| Next.js proxy allowlist | `v1/demo/(clients\|reset)`, `v1/clients/{id}/(chat\|ledger\|consents)`, revoke by UUID | `web/src/app/api/pru/[...path]/route.ts` (`ALLOWED`) | MEASURED |
+| Next.js proxy allowlist | `v1/demo/(clients\|reset)`, `v1/clients/{id}/(chat\|ledger\|notes\|consents)`, revoke by UUID | `web/src/app/api/pru/[...path]/route.ts` (`ALLOWED`) | MEASURED |
 | Next.js proxy max body | `16384` | `web/src/app/api/pru/[...path]/route.ts` (`MAX_BODY_BYTES`) | MEASURED |
 | Next.js proxy does not forward browser credentials | no `authorization` or browser `cookie` on the gateway `fetch` | `web/tests/api-route.test.ts` (`forwards an allowed request without browser credentials`) | MEASURED |
 | Workspace cookie | `pru_workspace`, random UUIDv4, `HttpOnly`, `SameSite=Lax`, `Max-Age=3600` | `web/src/app/api/pru/[...path]/route.ts`; two-context Playwright test in `web/tests/e2e/workspace-isolation.spec.ts` | MEASURED |
@@ -51,15 +51,17 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | Token Factory daily budget | `1000000 tokens per UTC day; 32000-token in-flight reservation` | `crates/pru-gateway/src/limits.rs` (`DAILY_TOKEN_FACTORY_TOKEN_BUDGET`, `TOKEN_FACTORY_CALL_RESERVATION_TOKENS`) and persistence tests | MEASURED |
 | Concurrent local generations | `1` | `crates/pru-gateway/src/lib.rs` (`MAX_CONCURRENT_LOCAL_GENERATIONS`) and permit test | MEASURED |
 | Public readiness endpoint | `200 only when Next.js, the gateway, and llama-server are ready; no Token Factory call` | `web/src/app/healthz/route.ts`; `crates/pru-gateway/src/api.rs` (`healthz`); Rust and Vitest readiness tests | MEASURED |
-| llama-server starts without the Token Factory key | `env -u NEBIUS_API_KEY /opt/llama/llama-server` | `docker/entrypoint.sh:27` | MEASURED |
-| Next.js starts after the Token Factory key is unset | `unset NEBIUS_API_KEY` then `"$@"` | `docker/entrypoint.sh:72-74` | MEASURED |
+| Visitor data permissions | `root 0700; files 0600` | `docker/entrypoint.sh` (`umask 077`, `chmod 0700`); `scripts/smoke-hermes-container.sh` | MEASURED |
+| Per-client note limits | `20 notes; 280 characters each` | `crates/pru-gateway/src/api.rs` (`MAX_AGENT_NOTES`, `MAX_AGENT_NOTE_CHARS`) and API/MCP tests | MEASURED |
+| llama-server starts without the Token Factory key | `env -u NEBIUS_API_KEY /opt/llama/llama-server` | `docker/entrypoint.sh` | MEASURED |
+| Next.js starts after all model credentials are unset | `unset NEBIUS_API_KEY PRU_AGENT_SECRET PRU_HERMES_API_KEY` then `"$@"` | `docker/entrypoint.sh` | MEASURED |
 | Judge door fetches only `/api/pru/` | `fetch(\`/api/pru/${path}\`)` | `web/src/ui/JudgeDoor.tsx:15` (`api` helper) | MEASURED |
 
 ## Models and services
 
 | Claim | Exact value | Source | Tag |
 |---|---|---|---|
-| Token Factory model id | `"nvidia/Nemotron-3_5-Lightning"` | `crates/pru-gateway/src/lib.rs:32` (`TOKEN_FACTORY_MODEL`) | MEASURED |
+| Token Factory model id | `"nvidia/nemotron-3-super-120b-a12b"` | `crates/pru-gateway/src/lib.rs` (`TOKEN_FACTORY_MODEL`) | MEASURED |
 | Token Factory recipient label | `"Nebius Token Factory"` | `crates/pru-gateway/src/lib.rs:33` | MEASURED |
 | Token Factory base URL default | `"https://api.tokenfactory.nebius.com/v1"` | `crates/pru-gateway/src/main.rs:38-39`; `.env.example:10` | MEASURED |
 | Local llama-server URL default | `"http://127.0.0.1:8081/v1"` | `crates/pru-gateway/src/main.rs:33-34` | MEASURED |
@@ -73,14 +75,22 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | llama.cpp tag for that commit | `"b11401"` | GitHub REST `GET https://api.github.com/repos/ggml-org/llama.cpp/git/refs/tags/b11401`; output: `sha=a7fb71fab83b474a0892b9a05aaa3a8ddca2729b` | SOURCED |
 | Container llama-server GPU layers | `0` | `docker/entrypoint.sh:36` (`--n-gpu-layers 0`) | MEASURED |
 | Gateway bind default | `"127.0.0.1:8787"` | `crates/pru-gateway/src/main.rs:52`; `Dockerfile:62` | MEASURED |
-| Chat list-price formula | `(input * 0.06 + output * 0.24) / 1_000_000` | `crates/pru-gateway/src/chat.rs:372-377`; this is a code constant, not a live Nebius invoice | MEASURED |
-| Chat test cost for the Token Factory stub | `0.0000108` | `crates/pru-gateway/tests/chat_api.rs:210` | MEASURED |
+| Chat list-price formula | `(input * 0.30 + output * 0.90) / 1_000_000` | `crates/pru-gateway/src/chat.rs` (`model_cost`); this is a code constant, not a live Nebius invoice | MEASURED |
+| Chat test cost for the Token Factory stub | `0.000048` | `crates/pru-gateway/tests/chat_api.rs` | MEASURED |
 | OpenShell compiler target | `"OpenShell 0.0.116 and prover 0.1.2"` | `crates/pru-boundary/src/lib.rs:35` | MEASURED |
 | Compiled boundary host | `"pru-gateway.local:443"` | `eval/boundaries/synthetic-client.yaml:32-34` | MEASURED |
 | Compiled YAML names Hermes paths | `"/opt/hermes"` and `"/usr/local/bin/hermes"` | `eval/boundaries/synthetic-client.yaml:7,47`; template at `crates/pru-boundary/src/lib.rs:57,` binary path in the same format string | MEASURED |
 | Compiled YAML names NemoClaw paths | `"/run/nemoclaw/managed-startup-ca-bundle.pem"` | `eval/boundaries/synthetic-client.yaml:11-13`; template at `crates/pru-boundary/src/lib.rs:61-63` | MEASURED |
-| Hermes Agent in the product runtime | `"NOT WIRED"` | no `hermes` binary spawn, no NemoClaw onboard, no OpenShell sandbox start in `crates/` or `docker/entrypoint.sh`; YAML paths are a compile template | MEASURED |
-| NemoClaw in the product runtime | `"NOT WIRED"` | same grep: no `nemoclaw` or `nemohermes` call in product code | MEASURED |
+| Hermes Agent in the product runtime | `"Hermes Agent v0.22.2 (Nous Research)"` | `json:eval/hermes_turns.json#candidates.super.environment.health.agent` | MEASURED |
+| Hermes upstream image pin | `"nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919"` | `Dockerfile` first stage | MEASURED |
+| Hermes Unix identity | `"uid 10000, gid 10000"` | `Dockerfile` (`useradd`); `docker/entrypoint.sh` (`setpriv`) | MEASURED |
+| Hermes jail receipt | `"Landlock enforced (ABI 7)"` | `json:eval/hermes_turns.json#candidates.super.environment.health.jail` | MEASURED |
+| Hermes network permission | `"TCP connect to port 8787 only"` | `docker/entrypoint.sh` (`pru-agent-jail --connect-port 8787`); launcher enforcement test | MEASURED |
+| Hermes MCP tool count | `7` | `crates/pru-gateway/src/mcp.rs` (`MCP_TOOL_NAMES`); exact-list integration test | MEASURED |
+| Hermes built-in model catalog, tool search, and memory | `"disabled"` | `docker/hermes-config.yaml` (`discover_models`, `tool_search`, `memory`, `model_catalog`) | MEASURED |
+| Keyless container agent | `"built-in Rust loop (no Token Factory key)"` | `docker/entrypoint.sh` | MEASURED |
+| Final Super container image size, bytes | `8065733424` | `json:eval/hermes_turns.json#candidates.super.environment.image_size_bytes` | MEASURED |
+| NemoClaw in the product runtime | `"NOT WIRED"` | no `nemoclaw` or `nemohermes` process in `Dockerfile` or `docker/entrypoint.sh` | MEASURED |
 | OpenShell sandbox in the product runtime | `"NOT WIRED"` | `pru-boundary` writes YAML; `scripts/prove-boundaries.sh` runs the standalone prover; the gateway does not start OpenShell | MEASURED |
 | Tavily | `"NOT WIRED"` | workspace grep for `Tavily`/`tavily` returned no matches | MEASURED |
 | Nebius Token Factory HTTP call | `POST {base}/chat/completions` | `crates/pru-gateway/src/lib.rs:626-628` | MEASURED |
@@ -166,9 +176,9 @@ CI workflow `.github/workflows/ci.yml` defines five jobs: `quality`, `formal-pro
 
 `container-build` steps: free runner disk; `docker/build-push-action` with `push: false`. The image carries the GGUF and compiles llama.cpp.
 
-Default `cargo test --workspace` on this machine: 64 passed. The feature-gated SymCC run adds 2 passed tests from `crates/pru-policy/tests/symcc.rs`.
+Default `cargo test --workspace` on this machine: 101 passed. The feature-gated SymCC run adds 2 passed tests from `crates/pru-policy/tests/symcc.rs`.
 
-Web unit tests: 6 vitest cases in 2 files. Playwright: 1 consent-lifecycle test, 1 workspace-isolation and reset test, 1 axe test, and 4 overflow widths (`390`, `768`, `1024`, `1440`). Playwright timeout is `180000` ms.
+Web unit tests: 12 vitest cases in 3 files. Playwright: 1 consent-lifecycle test, 1 workspace-isolation and reset test, 1 axe test, and 4 overflow widths (`390`, `768`, `1024`, `1440`). Playwright timeout is `180000` ms.
 
 Local gate results (Windows `cargo.exe` / `pnpm`, this session):
 
@@ -176,17 +186,17 @@ Local gate results (Windows `cargo.exe` / `pnpm`, this session):
 |---|---|---|---|
 | quality fmt | `0` | command: `cargo.exe fmt --all -- --check`; output: `EXIT_FMT=0` | MEASURED |
 | quality clippy | `0` | command: `cargo.exe clippy --workspace --all-targets -- -D warnings`; output: `EXIT_CLIPPY=0` | MEASURED |
-| quality cargo test | `0` | command: `cargo.exe test --workspace`; output: `EXIT_TEST=0` and 64 passed | MEASURED |
+| quality cargo test | `0` | command: `cargo.exe test --workspace`; output: `EXIT_TEST=0` and 101 passed | MEASURED |
 | quality generate-ssn-eval | `0` | command: `cargo.exe run -p pru-ssn --bin generate-ssn-eval -- eval/ssn_canaries.json`; output: `EXIT_EVAL=0` `positives=360 true_positives=360 misses=0 recall=1.000000` | MEASURED |
 | quality canary diff | `0` | command: `git.exe diff --exit-code -- eval/ssn_canaries.json`; output: `EXIT_DIFF=0` | MEASURED |
 | web typecheck | `0` | command: `pnpm typecheck` in `web/`; output: `EXIT_TYPECHECK=0` | MEASURED |
 | web lint | `0` | command: `pnpm lint` in `web/`; output: `EXIT_LINT=0` | MEASURED |
-| web vitest | `"2 files, 6 tests passed"` | command: `pnpm test` in `web/`; output: `Test Files  2 passed (2)` and `Tests  6 passed (6)` | MEASURED |
+| web vitest | `"3 files, 12 tests passed"` | command: `pnpm test` in `web/`; output: `Test Files  3 passed (3)` and `Tests  12 passed (12)` | MEASURED |
 | web Next.js build | `0` | command: `pnpm build` in `web/`; output: `Next.js 16.3.6` `EXIT_BUILD=0` | MEASURED |
 | web Playwright | `"7 passed"` | command: `pwsh -File scripts/run-web-e2e.ps1`; output: `7 passed` | MEASURED |
 | SymCC | `"2 passed"` | command: `powershell -File scripts/run-symcc.ps1`; output: cvc5 1.3.1, live implication held, planted violation produced a counterexample | MEASURED |
 | OpenShell prove-boundaries | `0` | command: `powershell -File scripts/prove-boundaries-wsl.ps1`; output: prover 0.1.2 accepted the generated policy and rejected the planted external network destination | MEASURED |
-| container build | `0` | command: `docker build --progress=plain -t pru:public-door-test .`; output: image size 6,150,825,015 bytes, 210-second health start period, zero baked `NEBIUS_API_KEY` entries | MEASURED |
+| container build | `0` | command: `docker build --progress=plain -t pru:hermes .`; output: image size 8,065,733,424 bytes, Hermes v0.22.2 build receipt, and 210-second health start period | MEASURED |
 
 All five CI job semantics ran on this machine. These exact Linux wrapper entry points could not run natively:
 
@@ -204,14 +214,13 @@ All five CI job semantics ran on this machine. These exact Linux wrapper entry p
 - Pru handles real taxpayer returns or stores real SSNs.
 - A public live demo URL exists. The judge door binds to `http://127.0.0.1:3000` (`web/playwright.config.ts:8`, README Phase B).
 - Tavily is part of Pru. There is no Tavily call in this repository.
-- Hermes Agent runs inside NVIDIA OpenShell through NemoClaw in the product. README.md:3 says that. Phase A at README.md:20 and Phase B at README.md:68 say Hermes is not wired. Product code agrees with the later sentences.
-- The OpenShell YAML template means Hermes or NemoClaw execute in the container. They do not.
-- The chat `cost_usd` figure is a live Nebius Token Factory invoice. It is the list-price formula in `crates/pru-gateway/src/chat.rs:376`.
+- Hermes Agent runs inside NVIDIA OpenShell through NemoClaw in the product. The shipped container runs Hermes directly under Landlock; the OpenShell path remains an optional, unverified PC build.
+- The OpenShell YAML template means Hermes or NemoClaw execute in the container. Neither does.
+- The chat `cost_usd` figure is a live Nebius Token Factory invoice. It is the code formula in `crates/pru-gateway/src/chat.rs` using NOT VERIFIED rates.
+- Either hosted model passed the 27-of-30 grounding gate. Lightning measured 12 and Super measured 11.
 - The CPU Docker benchmark numbers in README.md:57-60 were re-measured in this session.
 - IRS ATS public test taxpayers are committed in this repository. Only synthetic canaries and two demo clients are.
 
 ## Drift found
 
-1. README.md:3 states "Hermes Agent runs inside NVIDIA OpenShell through NemoClaw." README.md:20 (Phase A) and README.md:68 (Phase B) state that Hermes is not wired. Grep of product code finds no Hermes or NemoClaw runtime call. The later README sentences and the code win. Do not use the opening sentence.
-
-No other numeric drift was found between README tables and the committed sources opened for this sheet. The GGUF size `2837072864` matches README `2,837,072,864`. The llama.cpp commit matches GitHub tag `b11401`. The canary table matches `eval/ssn_canaries.json`.
+The commit 11 audit removed the stale README and FACTS claims that Hermes was not wired, updated the selected model and cost formula, and updated local test and image measurements. No remaining numeric drift was found between the README tables and the committed sources opened for this sheet. The GGUF size `2837072864` matches README `2,837,072,864`. The llama.cpp commit matches GitHub tag `b11401`. The canary and Hermes eval tables match their committed JSON artifacts.

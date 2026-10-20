@@ -1,10 +1,10 @@
 # Pru
 
-Pru is a tax-practice assistant for a solo preparer or small practice. The plan runs Hermes Agent inside NVIDIA OpenShell through NemoClaw; that runtime is proven in a separate spike and is not wired into the product code yet. The sections below say what is wired. A Rust gateway is the only permitted egress path. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment.
+Pru is a tax-practice assistant for a solo preparer or small practice. In the keyed container build, Hermes Agent v0.22.2 runs as one long-lived process under uid 10000 and a Landlock jail. A Rust gateway is Hermes's only model and tool boundary. The gateway checks each action against a signed consent token and Cedar policy before it can leave the client compartment. NVIDIA OpenShell and NemoClaw remain an optional PC-build path from a separate spike; they are not part of the shipped container.
 
 Pru keeps SSN-bearing prompts on the same machine as its gateway and routes them to a local OpenAI-compatible llama-server running NVIDIA Nemotron 3 Nano 4B. It may send consented, SSN-free prompts to NVIDIA Nemotron on Nebius Token Factory. Phase A uses only code-generated synthetic canaries. The product plan permits the IRS's public test taxpayers, labelled as test data, but this repository contains no real taxpayer data.
 
-## What phase A proves
+## What the repository proves
 
 - `pru-ssn` recognizes the required SSN surface forms, including the IRS test group `00`, and labels visible group `00` or area `9xx` identifiers as `test_only`.
 - The deterministic canary harness measured 360 detections from 360 generated positive cases and 0 flagged controls from 120 generated negative controls.
@@ -13,11 +13,13 @@ Pru keeps SSN-bearing prompts on the same machine as its gateway and routes them
 - The planted Cedar permit does not imply R. SymCC returns a counterexample where the bad policy permits disclosure and R denies it.
 - `pru-boundary` emits a REST-only OpenShell policy whose only network host is the Pru gateway. OpenShell prover 0.1.2 reports the compiled policy within its boundary and reports a planted `example.com` rule outside it.
 - `pru-gateway` scans every string in each action argument, verifies consent, asks Cedar, writes a JSONL decision ledger, and selects the local or Token Factory route. Its ledger stores keyed span hashes, never raw SSNs.
+- The container runs Hermes Agent v0.22.2 with only the gateway's OpenAI-compatible provider and seven MCP tools. Model catalog fetches, tool search, and Hermes's built-in memory are disabled.
+- The container smoke test measured Landlock ABI 7 on Docker Desktop, a `0700` visitor root, `0600` client files, and an access denial when uid 10000 tried to read a visitor file.
 - Email and calendar endpoints build a dry-run request and ledger entry. They do not send anything in phase A.
 
-## What phase A does not prove
+## What the repository does not prove
 
-The formal proof covers the Cedar decision logic. It does not prove that the gateway's context labels are truthful. The SSN result is measured recall on this generated canary distribution, not a guarantee over every document or OCR failure. The OpenShell proof covers the prover's REST fragment. Phase A does not wire Hermes, the sandbox, email, calendar, consent UI, or a real practice workflow. Those are phase B tasks.
+The formal proof covers the Cedar decision logic. It does not prove that the gateway's context labels are truthful. The SSN result is measured recall on this generated canary distribution, not a guarantee over every document or OCR failure. The OpenShell proof covers the prover's REST fragment, not the product container. Landlock availability on the planned Nebius endpoint is not verified. The live grounding eval also found that neither tested hosted model met the required 27 of 30 expected-first-tool threshold. No real practice workflow, Gmail or Calendar send, or real taxpayer data is included.
 
 This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R. 301.7216-3, Rev. Proc. 2013-14, or any specific disclosure.
 
@@ -25,9 +27,11 @@ This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R
 
 The test build gives a judge one URL at `http://127.0.0.1:3000`. The browser talks only to a fixed Next.js server route. The server route talks to the Rust gateway on the container loopback interface. The browser never receives `NEBIUS_API_KEY`.
 
-The image starts three processes. Next.js serves the page. The Axum gateway owns consent checks, Cedar decisions, model routing, and the per-client JSONL ledger. A CPU-only llama-server runs NVIDIA Nemotron 3 Nano 4B for SSN-bearing context. SSN-free context with active use consent may go to `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Email and calendar tools remain dry runs.
+With a Token Factory key, the image starts four long-lived processes: Next.js, the Axum gateway, a CPU-only llama-server, and Hermes Agent. The gateway owns consent checks, Cedar decisions, model routing, per-client notes, and the JSONL ledger. SSN-bearing work reaches NVIDIA Nemotron 3 Nano 4B only through the local-model tool. SSN-free Hermes model calls use `nvidia/nemotron-3-super-120b-a12b` on Nebius Token Factory. Email and calendar tools remain dry runs.
 
-The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears only the current browser's consents and ledgers, then recreates its clients under `/tmp/pru-data/<workspace-id>/`. Real taxpayer data is barred by 26 U.S.C. 7216.
+The container defaults to `PRU_AGENT=hermes`. Without `NEBIUS_API_KEY`, its entrypoint disables Hermes and keeps the existing built-in Rust loop available. With a key, Hermes runs as uid 10000. A per-boot bearer protects `/agent/v1` and `/mcp`, and the Landlock launcher permits Hermes to connect only to gateway port 8787. `PRU_AGENT=builtin` selects the prior Rust loop explicitly.
+
+The two startup clients are TEST DATA. Their generated SSN-shaped values use group `00` or area `9xx`, which the Social Security Administration does not issue. Resetting the demo clears only the current browser's consents, notes, and ledgers, then recreates its clients under `/tmp/pru-data/<workspace-id>/`. Real taxpayer data is barred by 26 U.S.C. 7216.
 
 From PowerShell, build the image and start it without a key:
 
@@ -48,6 +52,24 @@ docker run --rm --name pru-test -p 3000:3000 -e NEBIUS_API_KEY pru:test
 
 Stop either container with `docker stop pru-test`.
 
+## Agent isolation by build
+
+| Build | Where Hermes runs | Network path for Hermes | Enforced by | Evidence |
+|---|---|---|---|---|
+| Test build with a Token Factory key | In the Pru container as uid 10000 | Pru gateway on `127.0.0.1:8787` only | Landlock TCP-connect rule, Unix permissions, and a per-boot gateway credential | Container smoke measured Landlock ABI 7 and denied uid 10000 access to a `0600` visitor file |
+| Hosted, December 1 to 15 | Same image | Same | Same if the endpoint kernel has Landlock ABI 4 or newer; otherwise the built-in loop runs | NOT VERIFIED until first endpoint boot; `/healthz` reports the agent and jail status |
+| Optional PC build | OpenShell sandbox through NemoClaw | OpenShell REST policy to the Pru gateway | OpenShell 0.0.116 in the prior spike | Hermes spike measured; Pru wiring is NOT VERIFIED and is not shipped here |
+
+The visitor data root is mode `0700`, files inherit mode `0600` from `umask 077`, and Hermes receives neither `NEBIUS_API_KEY` nor permission to read that root. Landlock restricts TCP connect, not UDP, and its availability on Nebius is unknown until deployment.
+
+## Hermes Agent wiring
+
+Hermes uses `POST /agent/v1/chat/completions` as its model provider and `POST /mcp` as its only tool server. The gateway strips upstream `reasoning_effort` and `stream`, overwrites the model id, applies consent and Cedar, scans for SSNs, reserves hosted tokens, and writes the trace ledger. The seven MCP tools are `get_client_summary`, `get_consent_state`, `read_document`, `ask_local_model`, `draft_client_email`, `propose_calendar_slot`, and `remember_note`.
+
+Only one Hermes turn may run at a time. Each browser turn gets a fresh Hermes session id, and the gateway deletes that session after the response. Cleanup retries a temporary Hermes `session_active_turn` conflict five times with at most one second of total delay. Model catalog fetches, tool search, title generation, background review, and Hermes's built-in memory are disabled.
+
+Per-client notes are plain JSON lines in the client's workspace directory. Only `remember_note` can write them, each note is limited to 280 characters, each client is limited to 20 notes, and reset clears them. The gateway inserts notes into later turn preambles. They are deleted with the workspace after one idle hour on the hosted door and are not encrypted at rest.
+
 ## Hosted during judging
 
 The owner plans to run the same image on a Nebius Serverless endpoint from December 1 through December 15, 2026. Outside that judging window, use the test build above. The planned endpoint is `cpu-d3` with 4 vCPU and 16 GB RAM. This is an operating decision, not a claim that the endpoint already exists. No cloud resource was created while preparing this repository.
@@ -56,7 +78,7 @@ The hosted image sits behind the endpoint's managed HTTPS ingress. The public pa
 
 Each visitor receives a random UUIDv4 in the `pru_workspace` cookie. The cookie is `HttpOnly`, `SameSite=Lax`, scoped to `/`, and renewed with a 3,600-second lifetime on each API response. The Next.js server validates the cookie and sends the workspace id to the loopback-only gateway. Browser credentials and caller-supplied internal headers are not forwarded.
 
-The gateway stores that visitor's two TEST DATA clients, consent records, and ledgers under `/tmp/pru-data/<workspace-id>/`. `Reset demo` takes an exclusive lock and resets only that directory. A workspace that has never minted consent or started chat expires after 600 idle seconds. Once either action touches it, the idle lifetime is 3,600 seconds. Both rules survive process restarts. Cleanup runs every 60 seconds. At most 200 workspaces may be active at once. At capacity, the gateway evicts the least recently used untouched workspace. It never evicts a touched workspace early; if all 200 are touched, a new visitor receives a clear `503` response.
+The gateway stores that visitor's two TEST DATA clients, consent records, notes, and ledgers under `/tmp/pru-data/<workspace-id>/`. `Reset demo` takes an exclusive lock and resets only that directory. A workspace that has never minted consent or started chat expires after 600 idle seconds. Once either action touches it, the idle lifetime is 3,600 seconds. Both rules survive process restarts. Cleanup runs every 60 seconds. At most 200 workspaces may be active at once. At capacity, the gateway evicts the least recently used untouched workspace. It never evicts a touched workspace early; if all 200 are touched, a new visitor receives a clear `503` response.
 
 The public limits are fixed in code and covered by tests:
 
@@ -110,7 +132,18 @@ Re-run the measurement inside a running container:
 docker exec pru-test node /app/benchmark-local-model.mjs
 ```
 
-This part does not wire Hermes inside OpenShell on the hosted box, IRS ATS test taxpayers, Gmail or Calendar sending, a Windows Hello signer, or per-client SQLCipher memory. It does not prove that the gateway's context labels are truthful.
+This build wires Hermes directly under Landlock, not through OpenShell or NemoClaw. It does not include IRS ATS test taxpayers, Gmail or Calendar sending, a Windows Hello signer, or per-client SQLCipher memory. It does not prove that the gateway's context labels are truthful.
+
+## Measured Hermes grounding eval
+
+The committed report is [`eval/hermes_turns.json`](eval/hermes_turns.json). It contains all tool calls, gateway decisions, tokens, and latency for 10 prompts run three times per model in the real container.
+
+| Candidate | Grounded turns | Hosted tokens | Total wall latency | Computed cost | Security |
+|---|---:|---:|---:|---:|---|
+| `nvidia/Nemotron-3_5-Lightning` | 12 of 30 | 220,827 | 287,894 ms | $0.01402236 | 0 SSN egress violations; 3 of 3 injection probes passed |
+| `nvidia/nemotron-3-super-120b-a12b` | 11 of 30 | 147,611 | 190,277 ms | $0.04649430 | 0 SSN egress violations; 3 of 3 injection probes passed |
+
+The required grounding threshold was 27 of 30. Lightning failed, so the design's fallback switched the configured model to Super. Super also failed, so the artifact records no gate-selected model. The combined $0.06051666 is computed from returned usage at code-configured rates of $0.06/$0.24 per million Lightning input/output tokens and $0.30/$0.90 for Super. Those rates are NOT VERIFIED against an invoice.
 
 ## Measured SSN canary result
 
@@ -137,7 +170,8 @@ The positive generator uses only group `00` or area `9xx` for full identifiers. 
 | `pru-consent` | Consent records, salted PIN hashes, Biscuit minting and verification |
 | `pru-policy` | Cedar authorization and SymCC policy implication tests |
 | `pru-boundary` | Consent-ledger to OpenShell REST boundary compiler |
-| `pru-gateway` | Axum action boundary, route selection, dry runs, and egress ledger |
+| `pru-gateway` | Axum action boundary, Hermes model provider, MCP tools, route selection, notes, dry runs, and egress ledger |
+| `pru-agent-jail` | Linux Landlock launcher for the uid 10000 Hermes process |
 
 ## Run the Rust gates
 
