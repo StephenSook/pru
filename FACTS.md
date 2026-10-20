@@ -61,7 +61,7 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 
 | Claim | Exact value | Source | Tag |
 |---|---|---|---|
-| Token Factory model id | `"nvidia/nemotron-3-super-120b-a12b"` | `crates/pru-gateway/src/lib.rs` (`TOKEN_FACTORY_MODEL`) | MEASURED |
+| Token Factory default model id | `"nvidia/Nemotron-3_5-Lightning"` | `crates/pru-gateway/src/lib.rs` (`TOKEN_FACTORY_MODEL`); `json:eval/hermes_turns-2026-10-20.json#selection.selected_model` | MEASURED |
 | Token Factory recipient label | `"Nebius Token Factory"` | `crates/pru-gateway/src/lib.rs:33` | MEASURED |
 | Token Factory base URL default | `"https://api.tokenfactory.nebius.com/v1"` | `crates/pru-gateway/src/main.rs:38-39`; `.env.example:10` | MEASURED |
 | Local llama-server URL default | `"http://127.0.0.1:8081/v1"` | `crates/pru-gateway/src/main.rs:33-34` | MEASURED |
@@ -75,21 +75,22 @@ Pru must never hold real taxpayer data. This repository uses code-generated synt
 | llama.cpp tag for that commit | `"b11401"` | GitHub REST `GET https://api.github.com/repos/ggml-org/llama.cpp/git/refs/tags/b11401`; output: `sha=a7fb71fab83b474a0892b9a05aaa3a8ddca2729b` | SOURCED |
 | Container llama-server GPU layers | `0` | `docker/entrypoint.sh:36` (`--n-gpu-layers 0`) | MEASURED |
 | Gateway bind default | `"127.0.0.1:8787"` | `crates/pru-gateway/src/main.rs:52`; `Dockerfile:62` | MEASURED |
-| Chat list-price formula | `(input * 0.30 + output * 0.90) / 1_000_000` | `crates/pru-gateway/src/chat.rs` (`model_cost`); this is a code constant, not a live Nebius invoice | MEASURED |
-| Chat test cost for the Token Factory stub | `0.000048` | `crates/pru-gateway/tests/chat_api.rs` | MEASURED |
+| Lightning chat list-price formula | `(input * 0.06 + output * 0.24) / 1_000_000` | `crates/pru-gateway/src/chat.rs` (`model_cost`); code-configured NOT VERIFIED rates, not a live Nebius invoice | MEASURED |
+| Super chat list-price formula | `(input * 0.30 + output * 0.90) / 1_000_000` | `crates/pru-gateway/src/chat.rs` (`model_cost`); code-configured NOT VERIFIED rates, not a live Nebius invoice | MEASURED |
+| Chat test cost for the default Lightning Token Factory stub | `0.0000108` | `crates/pru-gateway/tests/chat_api.rs` | MEASURED |
 | OpenShell compiler target | `"OpenShell 0.0.116 and prover 0.1.2"` | `crates/pru-boundary/src/lib.rs:35` | MEASURED |
 | Compiled boundary host | `"pru-gateway.local:443"` | `eval/boundaries/synthetic-client.yaml:32-34` | MEASURED |
 | Compiled YAML names Hermes paths | `"/opt/hermes"` and `"/usr/local/bin/hermes"` | `eval/boundaries/synthetic-client.yaml:7,47`; template at `crates/pru-boundary/src/lib.rs:57,` binary path in the same format string | MEASURED |
 | Compiled YAML names NemoClaw paths | `"/run/nemoclaw/managed-startup-ca-bundle.pem"` | `eval/boundaries/synthetic-client.yaml:11-13`; template at `crates/pru-boundary/src/lib.rs:61-63` | MEASURED |
-| Hermes Agent in the product runtime | `"Hermes Agent v0.22.2 (Nous Research)"` | `json:eval/hermes_turns.json#candidates.super.environment.health.agent` | MEASURED |
+| Hermes Agent in the product runtime | `"Hermes Agent v0.22.2 (Nous Research)"` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.environment.health.agent` | MEASURED |
 | Hermes upstream image pin | `"nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919"` | `Dockerfile` first stage | MEASURED |
 | Hermes Unix identity | `"uid 10000, gid 10000"` | `Dockerfile` (`useradd`); `docker/entrypoint.sh` (`setpriv`) | MEASURED |
-| Hermes jail receipt | `"Landlock enforced (ABI 7)"` | `json:eval/hermes_turns.json#candidates.super.environment.health.jail` | MEASURED |
+| Hermes jail receipt | `"Landlock enforced (ABI 7)"` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.environment.health.jail` | MEASURED |
 | Hermes network permission | `"TCP connect to port 8787 only"` | `docker/entrypoint.sh` (`pru-agent-jail --connect-port 8787`); launcher enforcement test | MEASURED |
 | Hermes MCP tool count | `7` | `crates/pru-gateway/src/mcp.rs` (`MCP_TOOL_NAMES`); exact-list integration test | MEASURED |
 | Hermes built-in model catalog, tool search, and memory | `"disabled"` | `docker/hermes-config.yaml` (`discover_models`, `tool_search`, `memory`, `model_catalog`) | MEASURED |
 | Keyless container agent | `"built-in Rust loop (no Token Factory key)"` | `docker/entrypoint.sh` | MEASURED |
-| Final Super container image size, bytes | `8065733424` | `json:eval/hermes_turns.json#candidates.super.environment.image_size_bytes` | MEASURED |
+| Repaired eval container image size, bytes | `8065909672` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.environment.image_size_bytes` | MEASURED |
 | NemoClaw in the product runtime | `"NOT WIRED"` | no `nemoclaw` or `nemohermes` process in `Dockerfile` or `docker/entrypoint.sh` | MEASURED |
 | OpenShell sandbox in the product runtime | `"NOT WIRED"` | `pru-boundary` writes YAML; `scripts/prove-boundaries.sh` runs the standalone prover; the gateway does not start OpenShell | MEASURED |
 | Tavily | `"NOT WIRED"` | workspace grep for `Tavily`/`tavily` returned no matches | MEASURED |
@@ -128,18 +129,29 @@ Spike notes live in the sibling gitignored tree `../pru/spike/` (this repository
 | False-positive rate per control | `0.0` | `json:eval/ssn_canaries.json#results.false_positive_rate_per_control` | MEASURED |
 | One-sided 95% miss-rate upper bound | `0.008286950875235621` | `json:eval/ssn_canaries.json#results.miss_rate_upper_bound_95_one_sided` | MEASURED |
 | Confidence method | `"exact Clopper-Pearson binomial bound"` | `json:eval/ssn_canaries.json#results.confidence_method` | MEASURED |
-| Hermes eval schema version | `2` | `json:eval/hermes_turns.json#schema_version` | MEASURED |
-| Hermes eval prompts and runs per prompt | `{"prompt_count":10,"runs_per_prompt":3,"required_grounded_turns":27}` | `json:eval/hermes_turns.json#protocol` | MEASURED |
-| Lightning grounded turns | `12` | `json:eval/hermes_turns.json#selection.lightning_grounded_turns` | MEASURED |
-| Lightning gate result | `"lightning_failed"` | `json:eval/hermes_turns.json#selection.lightning_gate_result` | MEASURED |
-| Super grounded turns | `11` | `json:eval/hermes_turns.json#selection.super_grounded_turns` | MEASURED |
-| Super gate result | `"super_failed"` | `json:eval/hermes_turns.json#selection.super_gate_result` | MEASURED |
-| Hosted model configured after the gate | `"nvidia/nemotron-3-super-120b-a12b"` | `json:eval/hermes_turns.json#selection.configured_model` | MEASURED |
-| Hosted model selected by the gate | `null` | `json:eval/hermes_turns.json#selection.selected_model` | MEASURED |
-| Hermes grounding gate passed | `false` | `json:eval/hermes_turns.json#selection.overall_gate_passed` | MEASURED |
-| Hermes eval SSN egress violations | `0` | `json:eval/hermes_turns.json#selection.ssn_egress_violations` | MEASURED |
-| Hermes eval security probes passed | `6` | `json:eval/hermes_turns.json#selection.security_probes_passed` | MEASURED |
-| Hermes two-candidate computed eval cost | `0.06051666` | `json:eval/hermes_turns.json#selection.computed_eval_cost_usd` | MEASURED |
+| Historical failed Hermes eval schema version | `2` | `json:eval/hermes_turns.json#schema_version` | MEASURED |
+| Historical failed eval prompts and runs per prompt | `{"prompt_count":10,"runs_per_prompt":3,"required_grounded_turns":27}` | `json:eval/hermes_turns.json#protocol` | MEASURED |
+| Historical failed Lightning grounded turns | `12` | `json:eval/hermes_turns.json#selection.lightning_grounded_turns` | MEASURED |
+| Historical failed Lightning result | `"lightning_failed"` | `json:eval/hermes_turns.json#selection.lightning_gate_result` | MEASURED |
+| Historical failed Super grounded turns | `11` | `json:eval/hermes_turns.json#selection.super_grounded_turns` | MEASURED |
+| Historical failed Super result | `"super_failed"` | `json:eval/hermes_turns.json#selection.super_gate_result` | MEASURED |
+| Historical failed eval computed cost | `0.06051666` | `json:eval/hermes_turns.json#selection.computed_eval_cost_usd` | MEASURED |
+| Repaired eval schema version | `3` | `json:eval/hermes_turns-2026-10-20.json#schema_version` | MEASURED |
+| Repaired eval prompts and runs per prompt | `{"prompt_count":10,"runs_per_prompt":3,"required_grounded_turns":27}` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.protocol` | MEASURED |
+| Repaired Lightning grounded turns | `27` | `json:eval/hermes_turns-2026-10-20.json#selection.lightning_grounded_turns` | MEASURED |
+| Repaired Lightning gate result | `"lightning_passed"` | `json:eval/hermes_turns-2026-10-20.json#selection.lightning_gate_result` | MEASURED |
+| Repaired Super gate result | `"not_run_lightning_passed"` | `json:eval/hermes_turns-2026-10-20.json#selection.super_gate_result` | MEASURED |
+| Built-in comparison grounded turns | `0` | `json:eval/hermes_turns-2026-10-20.json#selection.builtin_grounded_turns` | MEASURED |
+| Built-in comparison gate result | `"builtin_failed"` | `json:eval/hermes_turns-2026-10-20.json#selection.builtin_gate_result` | MEASURED |
+| Hosted agent configured after the repaired gate | `"hermes"` | `json:eval/hermes_turns-2026-10-20.json#selection.configured_agent` | MEASURED |
+| Hosted model selected by the repaired gate | `"nvidia/Nemotron-3_5-Lightning"` | `json:eval/hermes_turns-2026-10-20.json#selection.selected_model` | MEASURED |
+| Repaired grounding gate passed | `true` | `json:eval/hermes_turns-2026-10-20.json#selection.overall_gate_passed` | MEASURED |
+| Repaired eval SSN egress violations | `0` | `json:eval/hermes_turns-2026-10-20.json#selection.ssn_egress_violations` | MEASURED |
+| Repaired Hermes security probes passed | `3` | `json:eval/hermes_turns-2026-10-20.json#selection.security_probes_passed` | MEASURED |
+| Repaired Lightning hosted tokens, latency, and cost | `{"hosted_tokens":178264,"total_wall_latency_ms":86958,"estimated_cost_usd":0.011346}` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.summary` | MEASURED |
+| Built-in hosted tokens, latency, and cost | `{"hosted_tokens":28809,"total_wall_latency_ms":102655,"estimated_cost_usd":0.0106101}` | `json:eval/hermes_turns-2026-10-20.json#candidates.builtin.summary` | MEASURED |
+| Repaired eval computed cost | `0.0219561` | `json:eval/hermes_turns-2026-10-20.json#selection.computed_eval_cost_usd` | MEASURED |
+| Diagnostic reproduction plus repaired eval computed spend | `0.0292071` | `json:eval/hermes_turns-2026-10-20.json#selection.cumulative_computed_spend_usd` | MEASURED |
 | Dashed canary count | `60` | `json:eval/ssn_canaries.json#format_counts.dashed` | MEASURED |
 | OCR-noise canary count | `60` | `json:eval/ssn_canaries.json#format_counts.ocr_noise` | MEASURED |
 | Partially masked canary count | `60` | `json:eval/ssn_canaries.json#format_counts.partially_masked` | MEASURED |
@@ -176,9 +188,9 @@ CI workflow `.github/workflows/ci.yml` defines five jobs: `quality`, `formal-pro
 
 `container-build` steps: free runner disk; `docker/build-push-action` with `push: false`. The image carries the GGUF and compiles llama.cpp.
 
-Default `cargo test --workspace` on this machine: 101 passed. The feature-gated SymCC run adds 2 passed tests from `crates/pru-policy/tests/symcc.rs`.
+Default `cargo test --workspace` on this machine: 106 passed. The feature-gated SymCC run adds 2 passed tests from `crates/pru-policy/tests/symcc.rs`.
 
-Web unit tests: 12 vitest cases in 3 files. Playwright: 1 consent-lifecycle test, 1 workspace-isolation and reset test, 1 axe test, and 4 overflow widths (`390`, `768`, `1024`, `1440`). Playwright timeout is `180000` ms.
+Web unit tests: 12 vitest cases in 3 files. Playwright: 1 consent-lifecycle test, 1 workspace-isolation and reset test, 1 axe test, 1 Hermes MCP compatibility regression, and 4 overflow widths (`390`, `768`, `1024`, `1440`). Playwright timeout is `180000` ms.
 
 Local gate results (Windows `cargo.exe` / `pnpm`, this session):
 
@@ -186,17 +198,17 @@ Local gate results (Windows `cargo.exe` / `pnpm`, this session):
 |---|---|---|---|
 | quality fmt | `0` | command: `cargo.exe fmt --all -- --check`; output: `EXIT_FMT=0` | MEASURED |
 | quality clippy | `0` | command: `cargo.exe clippy --workspace --all-targets -- -D warnings`; output: `EXIT_CLIPPY=0` | MEASURED |
-| quality cargo test | `0` | command: `cargo.exe test --workspace`; output: `EXIT_TEST=0` and 101 passed | MEASURED |
+| quality cargo test | `0` | command: `cargo.exe test --workspace`; output: `EXIT_TEST=0` and 106 passed | MEASURED |
 | quality generate-ssn-eval | `0` | command: `cargo.exe run -p pru-ssn --bin generate-ssn-eval -- eval/ssn_canaries.json`; output: `EXIT_EVAL=0` `positives=360 true_positives=360 misses=0 recall=1.000000` | MEASURED |
 | quality canary diff | `0` | command: `git.exe diff --exit-code -- eval/ssn_canaries.json`; output: `EXIT_DIFF=0` | MEASURED |
 | web typecheck | `0` | command: `pnpm typecheck` in `web/`; output: `EXIT_TYPECHECK=0` | MEASURED |
 | web lint | `0` | command: `pnpm lint` in `web/`; output: `EXIT_LINT=0` | MEASURED |
 | web vitest | `"3 files, 12 tests passed"` | command: `pnpm test` in `web/`; output: `Test Files  3 passed (3)` and `Tests  12 passed (12)` | MEASURED |
 | web Next.js build | `0` | command: `pnpm build` in `web/`; output: `Next.js 16.3.6` `EXIT_BUILD=0` | MEASURED |
-| web Playwright | `"7 passed"` | command: `pwsh -File scripts/run-web-e2e.ps1`; output: `7 passed` | MEASURED |
+| web Playwright | `"8 passed"` | command: `pwsh -File scripts/run-web-e2e.ps1`; output: `8 passed` | MEASURED |
 | SymCC | `"2 passed"` | command: `powershell -File scripts/run-symcc.ps1`; output: cvc5 1.3.1, live implication held, planted violation produced a counterexample | MEASURED |
 | OpenShell prove-boundaries | `0` | command: `powershell -File scripts/prove-boundaries-wsl.ps1`; output: prover 0.1.2 accepted the generated policy and rejected the planted external network destination | MEASURED |
-| container build | `0` | command: `docker build --progress=plain -t pru:hermes .`; output: image size 8,065,733,424 bytes, Hermes v0.22.2 build receipt, and 210-second health start period | MEASURED |
+| container build | `0` | command: `docker build --progress=plain -t pru:hermes .`; output: Hermes v0.22.2 build receipt and 210-second health start period | MEASURED |
 
 All five CI job semantics ran on this machine. These exact Linux wrapper entry points could not run natively:
 
@@ -205,7 +217,7 @@ All five CI job semantics ran on this machine. These exact Linux wrapper entry p
 | `bash scripts/run-symcc.sh` | `scripts/run-symcc.ps1` runs the same feature-gated Rust tests and cvc5 1.3.1. |
 | `bash scripts/prove-boundaries.sh` | `scripts/prove-boundaries-wsl.ps1` compiles the boundary on Windows and runs OpenShell prover 0.1.2 in WSL. |
 | `bash scripts/run-web-e2e.sh` | `pwsh -File scripts/run-web-e2e.ps1` starts the same gateway, model stub, and Next.js build, then runs the same Playwright suite against the Windows gateway binary. |
-| `pnpm --dir web exec playwright install --with-deps chromium` | The Linux package installation is not applicable on Windows. Installed Chromium ran all 7 Playwright cases. |
+| `pnpm --dir web exec playwright install --with-deps chromium` | The Linux package installation is not applicable on Windows. Installed Chromium ran all 8 Playwright cases. |
 | Ubuntu runner disk cleanup and `docker/build-push-action` | The runner cleanup is not applicable on Windows. Docker Desktop built the same Dockerfile with BuildKit and `push: false` behavior. |
 
 ## Do not claim
@@ -217,10 +229,10 @@ All five CI job semantics ran on this machine. These exact Linux wrapper entry p
 - Hermes Agent runs inside NVIDIA OpenShell through NemoClaw in the product. The shipped container runs Hermes directly under Landlock; the OpenShell path remains an optional, unverified PC build.
 - The OpenShell YAML template means Hermes or NemoClaw execute in the container. Neither does.
 - The chat `cost_usd` figure is a live Nebius Token Factory invoice. It is the code formula in `crates/pru-gateway/src/chat.rs` using NOT VERIFIED rates.
-- Either hosted model passed the 27-of-30 grounding gate. Lightning measured 12 and Super measured 11.
+- Super passed or was rerun after the repaired gate. Lightning passed at 27 of 30, so the decision rule skipped Super.
 - The CPU Docker benchmark numbers in README.md:57-60 were re-measured in this session.
 - IRS ATS public test taxpayers are committed in this repository. Only synthetic canaries and two demo clients are.
 
 ## Drift found
 
-The commit 11 audit removed the stale README and FACTS claims that Hermes was not wired, updated the selected model and cost formula, and updated local test and image measurements. No remaining numeric drift was found between the README tables and the committed sources opened for this sheet. The GGUF size `2837072864` matches README `2,837,072,864`. The llama.cpp commit matches GitHub tag `b11401`. The canary and Hermes eval tables match their committed JSON artifacts.
+The failed receipt remains unchanged as historical evidence. The repaired receipt records the Lightning pass, the skipped Super run, the failed built-in comparison, and the cumulative computed spend. The shipped defaults now match its selected Hermes and Lightning configuration. The GGUF size `2837072864` matches README `2,837,072,864`. The llama.cpp commit matches GitHub tag `b11401`. The canary and grounding tables match their committed JSON artifacts.

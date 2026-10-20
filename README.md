@@ -19,7 +19,7 @@ Pru keeps SSN-bearing prompts on the same machine as its gateway and routes them
 
 ## What the repository does not prove
 
-The formal proof covers the Cedar decision logic. It does not prove that the gateway's context labels are truthful. The SSN result is measured recall on this generated canary distribution, not a guarantee over every document or OCR failure. The OpenShell proof covers the prover's REST fragment, not the product container. Landlock availability on the planned Nebius endpoint is not verified. The live grounding eval also found that neither tested hosted model met the required 27 of 30 expected-first-tool threshold. No real practice workflow, Gmail or Calendar send, or real taxpayer data is included.
+The formal proof covers the Cedar decision logic. It does not prove that the gateway's context labels are truthful. The SSN result is measured recall on this generated canary distribution, not a guarantee over every document or OCR failure. The OpenShell proof covers the prover's REST fragment, not the product container. Landlock availability on the planned Nebius endpoint is not verified. The repaired live grounding eval measured Lightning at exactly the required 27 of 30 expected first tools. That result does not prove perfect grounding on other prompts. No real practice workflow, Gmail or Calendar send, or real taxpayer data is included.
 
 This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R. 301.7216-3, Rev. Proc. 2013-14, or any specific disclosure.
 
@@ -27,7 +27,7 @@ This is engineering evidence, not a legal opinion about 26 U.S.C. 7216, 26 C.F.R
 
 The test build gives a judge one URL at `http://127.0.0.1:3000`. The browser talks only to a fixed Next.js server route. The server route talks to the Rust gateway on the container loopback interface. The browser never receives `NEBIUS_API_KEY`.
 
-With a Token Factory key, the image starts four long-lived processes: Next.js, the Axum gateway, a CPU-only llama-server, and Hermes Agent. The gateway owns consent checks, Cedar decisions, model routing, per-client notes, and the JSONL ledger. SSN-bearing work reaches NVIDIA Nemotron 3 Nano 4B only through the local-model tool. SSN-free Hermes model calls use `nvidia/nemotron-3-super-120b-a12b` on Nebius Token Factory. Email and calendar tools remain dry runs.
+With a Token Factory key, the image starts four long-lived processes: Next.js, the Axum gateway, a CPU-only llama-server, and Hermes Agent. The gateway owns consent checks, Cedar decisions, model routing, per-client notes, and the JSONL ledger. SSN-bearing work reaches NVIDIA Nemotron 3 Nano 4B only through the local-model tool. SSN-free Hermes model calls default to the gate-selected `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Email and calendar tools remain dry runs.
 
 The container defaults to `PRU_AGENT=hermes`. Without `NEBIUS_API_KEY`, its entrypoint disables Hermes and keeps the existing built-in Rust loop available. With a key, Hermes runs as uid 10000. A per-boot bearer protects `/agent/v1` and `/mcp`, and the Landlock launcher permits Hermes to connect only to gateway port 8787. `PRU_AGENT=builtin` selects the prior Rust loop explicitly.
 
@@ -134,16 +134,23 @@ docker exec pru-test node /app/benchmark-local-model.mjs
 
 This build wires Hermes directly under Landlock, not through OpenShell or NemoClaw. It does not include IRS ATS test taxpayers, Gmail or Calendar sending, a Windows Hello signer, or per-client SQLCipher memory. It does not prove that the gateway's context labels are truthful.
 
-## Measured Hermes grounding eval
+## Measured grounding evals
 
-The committed report is [`eval/hermes_turns.json`](eval/hermes_turns.json). It contains all tool calls, gateway decisions, tokens, and latency for 10 prompts run three times per model in the real container.
+The original failed report, [`eval/hermes_turns.json`](eval/hermes_turns.json), remains unchanged. The repaired report is [`eval/hermes_turns-2026-10-20.json`](eval/hermes_turns-2026-10-20.json). Both use the same 10 prompts, three runs per prompt, and the same expected-first-tool decision rule in the real container.
 
-| Candidate | Grounded turns | Hosted tokens | Total wall latency | Computed cost | Security |
+| Receipt and candidate | Grounded turns | Hosted tokens | Total wall latency | Computed cost | Security |
 |---|---:|---:|---:|---:|---|
-| `nvidia/Nemotron-3_5-Lightning` | 12 of 30 | 220,827 | 287,894 ms | $0.01402236 | 0 SSN egress violations; 3 of 3 injection probes passed |
-| `nvidia/nemotron-3-super-120b-a12b` | 11 of 30 | 147,611 | 190,277 ms | $0.04649430 | 0 SSN egress violations; 3 of 3 injection probes passed |
+| Original Lightning, failed | 12 of 30 | 220,827 | 287,894 ms | $0.01402236 | 0 SSN egress violations; 3 of 3 injection probes passed |
+| Original Super, failed | 11 of 30 | 147,611 | 190,277 ms | $0.04649430 | 0 SSN egress violations; 3 of 3 injection probes passed |
+| Repaired Hermes with Lightning, passed | 27 of 30 | 178,264 | 86,958 ms | $0.01134600 | 0 SSN egress violations; 3 of 3 injection probes passed |
+| Repaired Super | Not run | Not run | Not run | $0 | Lightning had already passed, so the fixed decision rule stopped |
+| Built-in Rust comparison, failed | 0 of 30 | 28,809 | 102,655 ms | $0.01061010 | 0 SSN egress violations; 0 of 3 Hermes-specific probes passed |
 
-The required grounding threshold was 27 of 30. Lightning failed, so the design's fallback switched the configured model to Super. Super also failed, so the artifact records no gate-selected model. The combined $0.06051666 is computed from returned usage at code-configured rates of $0.06/$0.24 per million Lightning input/output tokens and $0.30/$0.90 for Super. Those rates are NOT VERIFIED against an invoice.
+The original failure had two gateway compatibility causes. Hermes called `read_document` with the well-formed value `{"name":"W-2"}`, while the handler accepted only `w2`. Separately, `get_consent_state` returned an array in MCP `structuredContent`, but the negotiated MCP 2025 schema requires an object. Repeated validation failures opened Hermes's server circuit breaker. The fix accepts only the exact `w2` and observed `W-2` document identifiers, returns consent state inside an object, and keeps malformed requests and unrelated document names refused.
+
+The required threshold is 27 of 30. Lightning passed exactly, so the shipped keyed-container default is `PRU_AGENT=hermes` with `nvidia/Nemotron-3_5-Lightning`; Super was not rerun. The built-in loop completed without new infrastructure, but it exposes different tool names and lacks the read and note tools, so it scored 0 under the unchanged Hermes rule. Its 0 of 3 security probes means it did not create the Hermes-specific Token Factory refusal rows those probes require; its SSN turns stayed local and the receipt recorded 0 SSN egress violations.
+
+The repaired eval cost $0.02195610. Including the $0.00725100 diagnostic reproduction, cumulative computed spend was $0.02920710, below the $0.50 cap. Costs use returned usage and code-configured rates of $0.06/$0.24 per million Lightning input/output tokens and $0.30/$0.90 for Super. Those rates are NOT VERIFIED against an invoice.
 
 ## Measured SSN canary result
 
