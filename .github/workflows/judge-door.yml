@@ -161,9 +161,14 @@ jobs:
                   recoveries=$(( recoveries + 1 ))
                   last_recovery=$now
                   running_since=0
-                  nebius ai endpoint restart --id "$ENDPOINT_ID" --profile door --async \
-                    && echo "restart requested: RUNNING for 12 minutes without a ready door" \
-                    || echo "::warning::restart was refused while $state"
+                  if nebius ai endpoint restart --id "$ENDPOINT_ID" --profile door --async; then
+                    echo "restart requested: RUNNING for 12 minutes without a ready door"
+                  elif nebius ai endpoint stop --id "$ENDPOINT_ID" --profile door --async; then
+                    started=0
+                    echo "restart was refused; stop requested from $state so a later pass can start it"
+                  else
+                    echo "::warning::restart and stop were both refused while $state"
+                  fi
                 fi ;;
             esac
             sleep 20
