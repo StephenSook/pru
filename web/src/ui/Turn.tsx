@@ -100,7 +100,8 @@ export function LiveTurn({ turn, resultRef }: Readonly<{ turn: ChatResponse; res
       <TurnVerdict summary={summary} stampKey={turn.turn_id} />
       <p className="verdict-sentence">{verdictSentence(summary)}</p>
       <p className="answer-prose">{turn.answer}</p>
-      <TraceDetails steps={steps} label="Turn trace" />
+      {/* Keyed per turn, so a new turn's trace starts folded instead of inheriting the last one's open state. */}
+      <TraceDetails key={turn.turn_id} steps={steps} label="Turn trace" />
     </article>
   );
 }
