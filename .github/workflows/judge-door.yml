@@ -1,0 +1,121 @@
+name: judge-door
+
+# Keeps the hosted Pru door running only during judging. Every run compares the clock with the
+# window below and starts or stops the Nebius endpoint to match, so a late or skipped scheduled
+# run is repaired by the next one. Inside the window every run also checks /healthz and fails if
+# the door is not ready, which makes GitHub send the failure email.
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "ensure (follow the window), start, stop, or status"
+        required: false
+        default: ensure
+
+concurrency:
+  group: pru-judge-door
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  door:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NEBIUS_PROJECT_ID: ${{ vars.NEBIUS_PROJECT_ID }}
+      ENDPOINT_ID: ${{ vars.PRU_DOOR_ENDPOINT_ID }}
+      DOOR_URL: ${{ vars.PRU_DOOR_URL }}
+      NEBIUS_SA_CREDENTIALS: ${{ secrets.NEBIUS_SA_CREDENTIALS }}
+      # Optional ISO time. Before it, a run outside the window leaves the endpoint as it is, so a
+      # manual start (for example to record a demo) is not stopped by the next scheduled run.
+      KEEP_UNTIL_UTC: ${{ vars.PRU_DOOR_KEEP_RUNNING_UNTIL }}
+      # Starts 24 hours early because scheduled runs can be hours late; ends after December 15
+      # has ended everywhere (UTC-12).
+      WINDOW_START_UTC: "2026-11-30T00:00:00Z"
+      WINDOW_END_UTC: "2026-12-16T12:00:00Z"
+      ACTION: ${{ inputs.action || 'ensure' }}
+    steps:
+      - name: Check configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in NEBIUS_PROJECT_ID ENDPOINT_ID DOOR_URL NEBIUS_SA_CREDENTIALS; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required setting: $name"
+              exit 1
+            fi
+          done
+          case "$ACTION" in ensure|start|stop|status) ;; *) echo "::error::Unknown action $ACTION"; exit 1;; esac
+
+      - name: Install Nebius CLI 0.12.283
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Installer: https://docs.nebius.com/cli/install
+          curl --fail --silent --show-error --location \
+            https://artifacts.nebius.cloud/cli/install.sh \
+            --output "$RUNNER_TEMP/install-nebius.sh"
+          NEBIUS_CLI_VERSION=0.12.283 bash "$RUNNER_TEMP/install-nebius.sh"
+          echo "$HOME/.nebius/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate the scheduler service account
+        shell: bash
+        run: |
+          set -euo pipefail
+          credentials="$RUNNER_TEMP/nebius-door-credentials.json"
+          printf '%s' "$NEBIUS_SA_CREDENTIALS" > "$credentials"
+          chmod 600 "$credentials"
+          nebius profile create \
+            --endpoint api.nebius.cloud \
+            --service-account-file "$credentials" \
+            --parent-id "$NEBIUS_PROJECT_ID" \
+            --profile door
+
+      - name: Bring the endpoint to the wanted state
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          start=$(date -u -d "$WINDOW_START_UTC" +%s)
+          end=$(date -u -d "$WINDOW_END_UTC" +%s)
+          want=stopped
+          if (( now >= start && now < end )); then
+            want=running
+          elif [[ -n "${KEEP_UNTIL_UTC:-}" ]] && (( now < $(date -u -d "$KEEP_UNTIL_UTC" +%s) )); then
+            want=leave
+          fi
+          case "$ACTION" in start) want=running;; stop) want=stopped;; status) want=report;; esac
+          # Fails the run when the credential, the endpoint id or the API is wrong.
+          state=$(nebius ai endpoint get --id "$ENDPOINT_ID" --profile door --format json | jq -er '.status.state')
+          echo "endpoint $ENDPOINT_ID is $state; wanted: $want"
+          echo "want=$want" >> "$GITHUB_OUTPUT"
+          if [[ "$want" == running && "$state" == STOPPED ]]; then
+            nebius ai endpoint start --id "$ENDPOINT_ID" --profile door --async
+            echo "start requested"
+          elif [[ "$want" == stopped && "$state" != STOPPED && "$state" != STOPPING ]]; then
+            nebius ai endpoint stop --id "$ENDPOINT_ID" --profile door --async
+            echo "stop requested"
+          fi
+
+      - name: Check the door is ready
+        if: steps.state.outputs.want == 'running'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A restart pulls the 8 GB image again and took about 9 minutes on 2026-10-21.
+          for attempt in $(seq 1 80); do
+            body=$(curl --silent --max-time 20 "$DOOR_URL/healthz" || true)
+            if [[ "$(jq -r '.status // empty' <<<"$body" 2>/dev/null)" == ready ]]; then
+              echo "ready on attempt $attempt: $body"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::$DOOR_URL/healthz was not ready after 20 minutes. Last body: ${body:-none}"
+          exit 1
