@@ -70,19 +70,45 @@ export function fromRecordedDecision(decision: RecordedDecision): TraceStep {
   };
 }
 
-// The gateway's policy reason codes, in a preparer's words. The raw code is always shown beside it.
-const REASONS: Record<string, string> = {
-  cedar_allow: "Allowed by the consent on file.",
-  no_active_consent: "No consent is on file for this client.",
-  matching_consent_required: "No matching use consent is on file for this client.",
-  consent_facts_do_not_match: "No consent on file names this recipient and purpose.",
-  ssn_requires_local_destination: "An SSN may only go to the local model.",
-  rate_limit_exceeded: "Too many requests this minute.",
-  token_factory_not_configured: "Token Factory is not configured on this server.",
-};
+type ReasonLabel = { decision: "permit" | "deny"; text: string };
 
-export function reasonText(code: string): string {
-  return REASONS[code] ?? "Pru refused this step.";
+// The gateway's policy reason codes, in a preparer's words, each with the decision it explains.
+// The raw code is always shown beside it. These are every fixed code the gateway writes into a
+// ledger row: crates/pru-gateway/src/lib.rs (execute_gateway_action, append_completion) and the
+// Cedar authorizer's diagnostics in crates/pru-policy/src/lib.rs. tests/reasons.test.tsx reads
+// both files and fails if this list and the Rust source disagree.
+const REASONS = new Map<string, ReasonLabel>([
+  ["cedar_allow", { decision: "permit", text: "Allowed by the consent on file." }],
+  ["upstream_complete", { decision: "permit", text: "The allowed model call finished." }],
+  ["no_active_consent", { decision: "deny", text: "No consent is on file for this client." }],
+  ["matching_consent_required", { decision: "deny", text: "No matching use consent is on file for this client." }],
+  ["consent_facts_do_not_match", { decision: "deny", text: "No consent on file names this recipient and purpose." }],
+  ["ssn_requires_local_destination", { decision: "deny", text: "An SSN may only go to the local model." }],
+  ["token_factory_not_configured", { decision: "deny", text: "Token Factory is not configured on this server." }],
+  ["token_client_mismatch", { decision: "deny", text: "The consent token belongs to a different client." }],
+  ["token_purpose_mismatch", { decision: "deny", text: "The consent token names a different purpose." }],
+  ["principal_not_pru_agent", { decision: "deny", text: "Only Pru's own agent may move client data." }],
+]);
+
+// A failed consent verification is written as the error's own sentence with a value appended
+// (ConsentError in crates/pru-consent/src/lib.rs), so these match on the fixed start.
+const REASON_PREFIXES: ReadonlyArray<readonly [string, ReasonLabel]> = [
+  ["consent expired at ", { decision: "deny", text: "The client's consent has expired." }],
+  ["consent token is revoked: ", { decision: "deny", text: "The client revoked this consent." }],
+  ["invalid consent record: ", { decision: "deny", text: "The consent record on the token is not valid." }],
+];
+
+// What a reason with no label shows, and a label written for the other decision. It states only
+// that the gateway recorded the reason, so it cannot contradict the decision stamp beside it.
+export const UNLABELED_REASON = "The gateway recorded this reason:";
+
+function reasonLabel(code: string, decision: string): string | null {
+  const label = REASONS.get(code) ?? REASON_PREFIXES.find(([prefix]) => code.startsWith(prefix))?.[1];
+  return label && label.decision === decision ? label.text : null;
+}
+
+export function reasonText(code: string, decision: string): string {
+  return reasonLabel(code, decision) ?? UNLABELED_REASON;
 }
 
 export type RouteStamp = "LOCAL" | "TOKEN FACTORY";
@@ -121,7 +147,10 @@ const DRY_RUN_RESULTS: Record<string, string> = {
 
 // The plain sentence under a turn's stamps, built only from what its steps record.
 export function verdictSentence(summary: TurnSummary): string {
-  if (summary.denied) return reasonText(summary.denied.reason);
+  if (summary.denied) {
+    const { reason } = summary.denied;
+    return reasonLabel(reason, "deny") ?? `${UNLABELED_REASON} ${reason}`;
+  }
   const parts: string[] = [];
   if (summary.routes.includes("LOCAL")) parts.push("The SSN-bearing step ran on the local model.");
   for (const tool of new Set(summary.dryRunTools)) {

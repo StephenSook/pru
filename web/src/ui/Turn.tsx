@@ -39,7 +39,7 @@ export function TraceList({ steps, label }: Readonly<{ steps: readonly TraceStep
             <span className="step-title">{stepTitle(step)}</span>
             {step.dryRun ? <span className="dry-run">Nothing sent</span> : null}
           </div>
-          <p>{reasonText(step.reason)} <span className="reason-code">({step.reason})</span></p>
+          <p>{reasonText(step.reason, step.decision)} <span className="reason-code">({step.reason})</span></p>
           {step.redactedSpans ? (
             <p className="redacted">{step.redactedSpans} sensitive {step.redactedSpans === 1 ? "span was" : "spans were"} removed before this call.</p>
           ) : null}

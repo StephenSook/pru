@@ -51,6 +51,23 @@ export const PRESETS = [
   },
 ] as const;
 
+// One row of the client's ledger. The reason's label is chosen with the row's own decision, so an
+// allowed row never reads as a refusal.
+export function LedgerRow({ entry }: Readonly<{ entry: LedgerEntry }>) {
+  return (
+    <article className="ledger-row">
+      <div><RouteBadge route={entry.route} /><strong className={`decision decision-${entry.decision}`}>{decisionLabel(entry.decision)}</strong></div>
+      <p>{reasonText(entry.policy_reason, entry.decision)} <span className="reason-code">({entry.policy_reason})</span></p>
+      <dl>
+        <div><dt>Action</dt><dd>{entry.action}</dd></div>
+        <div><dt>Model</dt><dd>{entry.model_id ?? "none"}</dd></div>
+        <div><dt>Ledger entry</dt><dd className="hash">{entry.id}</dd></div>
+        <div><dt>Fingerprint of the SSN seen (value not stored)</dt><dd className="hash">{entry.span_hashes[0] ?? "none"}</dd></div>
+      </dl>
+    </article>
+  );
+}
+
 // The gateway sends SSN-bearing work to the local model, so a request that names the SSN is the
 // slow one worth warning about while it runs.
 function namesTheSsn(prompt: string): boolean {
@@ -458,18 +475,7 @@ export function JudgeDoor({ hosted }: Readonly<{ hosted: boolean }>) {
           <p className="small-note">Newest first, one row per gateway decision. The SSN fingerprint is a keyed hash, so the same SSN is recognized again without being stored.</p>
           <div className="ledger-list">
             {ledger.length === 0 && <p className="empty">Run a request to see where this client&apos;s data went.</p>}
-            {ledger.map((entry) => (
-              <article className="ledger-row" key={entry.id}>
-                <div><RouteBadge route={entry.route} /><strong className={`decision decision-${entry.decision}`}>{decisionLabel(entry.decision)}</strong></div>
-                <p>{reasonText(entry.policy_reason)} <span className="reason-code">({entry.policy_reason})</span></p>
-                <dl>
-                  <div><dt>Action</dt><dd>{entry.action}</dd></div>
-                  <div><dt>Model</dt><dd>{entry.model_id ?? "none"}</dd></div>
-                  <div><dt>Ledger entry</dt><dd className="hash">{entry.id}</dd></div>
-                  <div><dt>Fingerprint of the SSN seen (value not stored)</dt><dd className="hash">{entry.span_hashes[0] ?? "none"}</dd></div>
-                </dl>
-              </article>
-            ))}
+            {ledger.map((entry) => <LedgerRow key={entry.id} entry={entry} />)}
           </div>
         </Part>
       </div>
