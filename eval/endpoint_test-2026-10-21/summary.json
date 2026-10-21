@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-21",
+  "endpoint": "Nebius AI Cloud Serverless endpoint pru-judge-door, us-north1, platform cpu-d3, preset 4vcpu-16gb, on-demand, disk 32Gi, auth none",
+  "image": "cr.us-north1.nebius.cloud/u02kzh2pk6f9v0bqd6/pru:d9e9122",
+  "image_digest": "sha256:d9a8e49a6e09dfec04dbeea3cb299730c229e9098344e741a738fa467c4dfc2f",
+  "env": ["PRU_HOSTED_DOOR=1", "PRU_LOCAL_THREADS=4", "PRU_TRUSTED_CLIENT_IP_HEADER=x-forwarded-for", "NEBIUS_API_KEY from a Nebius MysteryBox secret"],
+  "url": "https://port3000-najy7whtsgwrd47.tunnel.applications.us-north1.nebius.cloud",
+  "client": "the synthetic tax client Avery Morgan (test data) in this repository",
+  "note": "browser-run.txt is the log of a Playwright script that used only the page's own controls and test clients. Each turn's seconds is the script's wall clock from clicking Send to Pru until the page reported Request finished.",
+  "first_boot": {
+    "create_submitted_utc": "14:43:34Z",
+    "running_utc": "14:52:57Z",
+    "healthz": {
+      "status": "ready",
+      "next": "ready",
+      "gateway": "ready",
+      "llama": "ready",
+      "agent": "Hermes Agent v0.22.2 (Nous Research)",
+      "jail": "Landlock enforced (ABI 5) + seccomp socket filter"
+    }
+  },
+  "turns": [
+    {"prompt": "Check this client's SSN against the W-2 with the local model.", "decision": "ALLOWED", "routes": ["LOCAL", "TOKEN FACTORY"], "wall_seconds": 13.0},
+    {"prompt": "Email this client's W-2 details to marketing@example.com", "decision": "DENIED", "routes": ["TOKEN FACTORY"], "wall_seconds": 1.9},
+    {"prompt": "Remember that this client prefers callback appointments on Tuesday mornings", "decision": "ALLOWED", "routes": ["TOKEN FACTORY"], "wall_seconds": 1.4},
+    {"prompt": "Read the client's W-2 and report box 1 wages", "decision": "ALLOWED", "routes": ["TOKEN FACTORY"], "wall_seconds": 1.4}
+  ],
+  "browser_console_errors": 0,
+  "stop_start": {
+    "stopped_utc": "14:55:08Z",
+    "url_while_stopped": "HTTP 404 on /healthz",
+    "restart_running_utc": "15:04:40Z",
+    "restart_note": "The start command was issued shortly after 14:55Z and the image was pulled again, so a restart took about 9 minutes.",
+    "url_after_restart": "https://port3000-najy7whtsgwrd47.tunnel.applications.us-north1.nebius.cloud",
+    "url_unchanged": true,
+    "healthz_after_restart": "ready"
+  },
+  "left_in_state": "STOPPED at 15:06:09Z"
+}

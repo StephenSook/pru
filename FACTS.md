@@ -151,6 +151,9 @@ Spike notes live in the sibling gitignored tree `../pru/spike/` (this repository
 | Repaired Hermes security probes passed | `3` | `json:eval/hermes_turns-2026-10-20.json#selection.security_probes_passed` | MEASURED |
 | Repaired Lightning hosted tokens, latency, and cost | `{"hosted_tokens":178264,"total_wall_latency_ms":86958,"estimated_cost_usd":0.011346}` | `json:eval/hermes_turns-2026-10-20.json#candidates.lightning.summary` | MEASURED |
 | Built-in hosted tokens, latency, and cost | `{"hosted_tokens":28809,"total_wall_latency_ms":102655,"estimated_cost_usd":0.0106101}` | `json:eval/hermes_turns-2026-10-20.json#candidates.builtin.summary` | MEASURED |
+| Hosted judging URL | `"https://port3000-najy7whtsgwrd47.tunnel.applications.us-north1.nebius.cloud"` | `json:eval/endpoint_test-2026-10-21/summary.json#url` | MEASURED |
+| Hosted URL unchanged after stop and start | `true` | `json:eval/endpoint_test-2026-10-21/summary.json#stop_start.url_unchanged` | MEASURED |
+| Hosted endpoint health on first boot of d9e9122 | `{"status":"ready","agent":"Hermes Agent v0.22.2 (Nous Research)","jail":"Landlock enforced (ABI 5) + seccomp socket filter"}` | `json:eval/endpoint_test-2026-10-21/summary.json#first_boot.healthz` | MEASURED |
 | Repaired eval computed cost | `0.0219561` | `json:eval/hermes_turns-2026-10-20.json#selection.computed_eval_cost_usd` | MEASURED |
 | Diagnostic reproduction plus repaired eval computed spend | `0.0292071` | `json:eval/hermes_turns-2026-10-20.json#selection.cumulative_computed_spend_usd` | MEASURED |
 | Dashed canary count | `60` | `json:eval/ssn_canaries.json#format_counts.dashed` | MEASURED |

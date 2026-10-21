@@ -57,10 +57,10 @@ Stop either container with `docker stop pru-test`.
 | Build | Where Hermes runs | Network path for Hermes | Enforced by | Evidence |
 |---|---|---|---|---|
 | Test build with a Token Factory key | In the Pru container as uid 10000 | TCP to port 8787 only (the gateway is `127.0.0.1:8787`); no other socket except Unix sockets | Landlock TCP-connect rule, a seccomp socket filter, Unix permissions, and a per-boot gateway credential | Container smoke measured Landlock ABI 7 and denied uid 10000 access to a `0600` visitor file |
-| Hosted, December 1 to 15 | Same image | Same | Same if the endpoint kernel has Landlock ABI 4 or newer; otherwise the built-in loop runs | 2026-10-20 endpoint test: `/healthz` reported `Hermes Agent v0.22.2` and `Landlock enforced (ABI 5) + seccomp socket filter` ([receipt](eval/endpoint_test-2026-10-20/summary.json)) |
+| Hosted, December 1 to 15 | Same image | Same | Same if the endpoint kernel has Landlock ABI 4 or newer; otherwise the built-in loop runs | 2026-10-20 and 2026-10-21 endpoint tests: `/healthz` reported `Hermes Agent v0.22.2` and `Landlock enforced (ABI 5) + seccomp socket filter` ([2026-10-20](eval/endpoint_test-2026-10-20/summary.json), [2026-10-21](eval/endpoint_test-2026-10-21/summary.json)) |
 | Optional PC build | OpenShell sandbox through NemoClaw | OpenShell REST policy to the Pru gateway | OpenShell 0.0.116 in the prior spike | Hermes spike measured; Pru wiring is NOT VERIFIED and is not shipped here |
 
-The visitor data root is mode `0700`, files inherit mode `0600` from `umask 077`, and Hermes receives neither `NEBIUS_API_KEY` nor permission to read that root. Landlock restricts TCP connect by port; the seccomp filter refuses every other socket family and protocol, including through x32 syscall numbers, and `scripts/jail-socket-check.py` checks that inside the container. Landlock availability on Nebius is unknown until deployment.
+The visitor data root is mode `0700`, files inherit mode `0600` from `umask 077`, and Hermes receives neither `NEBIUS_API_KEY` nor permission to read that root. Landlock restricts TCP connect by port; the seccomp filter refuses every other socket family and protocol, including through x32 syscall numbers, and `scripts/jail-socket-check.py` checks that inside the container. On the Nebius endpoint, `/healthz` reported Landlock ABI 5 with the seccomp socket filter on 2026-10-20 and again on 2026-10-21.
 
 ## Hermes Agent wiring
 
@@ -72,7 +72,9 @@ Per-client notes are plain JSON lines in the client's workspace directory. Only 
 
 ## Hosted during judging
 
-The owner plans to run the same image on a Nebius Serverless endpoint from December 1 through December 15, 2026. Outside that judging window, use the test build above. The planned endpoint is `cpu-d3` with 4 vCPU and 16 GB RAM. The endpoint does not run outside that window. One test endpoint with this configuration ran for about an hour on 2026-10-20 and was deleted; its saved responses are in [`eval/endpoint_test-2026-10-20/`](eval/endpoint_test-2026-10-20).
+The hosted copy is at <https://port3000-najy7whtsgwrd47.tunnel.applications.us-north1.nebius.cloud>. It runs the same image on a Nebius Serverless endpoint (`cpu-d3`, 4 vCPU, 16 GB RAM) from December 1 through December 15, 2026, the judging window. Outside that window the endpoint is stopped and the URL answers `404`, so use the test build above.
+
+The endpoint was created on 2026-10-21 from the image built at `d9e9122`. A browser script then ran four turns on it through the page's own controls: a local SSN check in 13.0 s, a refused marketing email in 1.9 s, and two Token Factory turns in 1.4 s each, with no console errors. The endpoint was then stopped and started again. The URL stayed the same, `/healthz` reported ready after the restart, and the restart took about 9 minutes because the image is pulled again ([receipt](eval/endpoint_test-2026-10-21/summary.json)). An earlier one-hour test endpoint ran on 2026-10-20 and was deleted; its saved responses are in [`eval/endpoint_test-2026-10-20/`](eval/endpoint_test-2026-10-20).
 
 The hosted image sits behind the endpoint's managed HTTPS ingress. The public page accepts test clients only and must never receive real taxpayer data. Set `PRU_HOSTED_DOOR=1` so the page describes `LOCAL` as `this server's own model, never sent to a model provider`. Keep `PRU_LOCAL_THREADS=4` explicit in the deployment even though the container now defaults to `nproc`.
 

@@ -1,0 +1,16 @@
+14:53:25 client: demo-avery Avery Morgan (test data)
+14:53:26 shot 00-landing (viewport)
+14:53:26 consent recorded: use; status: Client consent recorded
+14:53:32 shot 00-progress-local (viewport)
+14:53:39 turn "Check this client's SSN against the W-2 with the local model." -> ALLOWED [LOCAL,TOKEN FACTORY] in 13.0 s; status: Request finished
+14:53:40 shot 01-local: y=205 1440x1018 ratio 1.41
+14:53:40 disclose recipient: avery.morgan@example.com
+14:53:40 consent recorded: disclose; status: Client consent recorded
+14:53:42 turn "Email this client's W-2 details to marketing@example.com" -> DENIED [TOKEN FACTORY] in 1.9 s; status: Request finished
+14:53:42 shot 02-denied: y=205 1440x1030 ratio 1.40
+14:53:44 turn "Remember that this client prefers callback appointments on Tuesday mornings" -> ALLOWED [TOKEN FACTORY] in 1.4 s; status: Request finished
+14:53:45 turn "Read the client's W-2 and report box 1 wages" -> ALLOWED [TOKEN FACTORY] in 1.4 s; status: Request finished
+14:53:46 shot 03-token-factory: y=205 1440x867 ratio 1.66
+14:53:46 shot 04-client-file: y=1070 1440x934 ratio 1.54
+14:53:47 ledger 200, notes 200
+14:53:47 console errors: 0
