@@ -107,16 +107,32 @@ jobs:
               exit 0 ;;
           esac
 
-          # Wanted running. The state is read again on every pass for up to 25 minutes, because a
-          # start pulls the 8 GB image again and took about 9 minutes on 2026-10-21. An endpoint
-          # that was STOPPING is started once it reaches STOPPED. ERROR, FAILED, or RUNNING with a
-          # door that is still not ready after 12 minutes gets one restart.
-          began=$(date -u +%s)
-          deadline=$(( began + 25 * 60 ))
+          # Wanted running. Each pass reads /healthz first, then the endpoint state, for up to 25
+          # minutes, because a start pulls the 8 GB image again and took about 9 minutes on
+          # 2026-10-21. STOPPED (including after STOPPING settles) is started. ERROR or FAILED is
+          # restarted, or stopped so the next pass can start it if the restart is refused. RUNNING
+          # with a door that has not been ready for 12 minutes of RUNNING is restarted. Recovery is
+          # tried at most 3 times per run, at least 5 minutes apart.
+          deadline=$(( $(date -u +%s) + 25 * 60 ))
           started=0
-          restarted=0
+          recoveries=0
+          last_recovery=0
+          running_since=0
           body=""
           while (( $(date -u +%s) < deadline )); do
+            body=$(curl --silent --max-time 10 "$DOOR_URL/healthz" || true)
+            if [[ "$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)" == ready ]]; then
+              echo "door ready: $body"
+              exit 0
+            fi
+            now=$(date -u +%s)
+            if [[ "$state" == RUNNING ]]; then
+              (( running_since == 0 )) && running_since=$now
+            else
+              running_since=0
+            fi
+            can_recover=0
+            if (( recoveries < 3 && now - last_recovery >= 5 * 60 )); then can_recover=1; fi
             case "$state" in
               STOPPED)
                 if (( started == 0 )); then
@@ -128,25 +144,28 @@ jobs:
                   fi
                 fi ;;
               ERROR|FAILED)
-                if (( restarted == 0 )); then
-                  restarted=1
-                  nebius ai endpoint restart --id "$ENDPOINT_ID" --profile door --async \
-                    || echo "::warning::restart was refused while $state"
-                  echo "restart requested from $state"
+                if (( can_recover == 1 )); then
+                  recoveries=$(( recoveries + 1 ))
+                  last_recovery=$now
+                  if nebius ai endpoint restart --id "$ENDPOINT_ID" --profile door --async; then
+                    echo "restart requested from $state"
+                  elif nebius ai endpoint stop --id "$ENDPOINT_ID" --profile door --async; then
+                    started=0
+                    echo "restart was refused; stop requested from $state so a later pass can start it"
+                  else
+                    echo "::warning::restart and stop were both refused while $state"
+                  fi
                 fi ;;
               RUNNING)
-                if (( restarted == 0 && $(date -u +%s) - began > 12 * 60 )); then
-                  restarted=1
+                if (( can_recover == 1 && now - running_since > 12 * 60 )); then
+                  recoveries=$(( recoveries + 1 ))
+                  last_recovery=$now
+                  running_since=0
                   nebius ai endpoint restart --id "$ENDPOINT_ID" --profile door --async \
+                    && echo "restart requested: RUNNING for 12 minutes without a ready door" \
                     || echo "::warning::restart was refused while $state"
-                  echo "restart requested: RUNNING but the door was not ready for 12 minutes"
                 fi ;;
             esac
-            body=$(curl --silent --max-time 10 "$DOOR_URL/healthz" || true)
-            if [[ "$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)" == ready ]]; then
-              echo "door ready: $body"
-              exit 0
-            fi
             sleep 20
             state=$(state_of || echo UNKNOWN)
             echo "$(date -u +%H:%M:%S) $state"
