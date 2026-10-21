@@ -10,9 +10,9 @@ export type TraceStep = {
   route: string;
   reason: string;
   redactedSpans: number;
-  latencyMs: number;
-  inputTokens: number;
-  outputTokens: number;
+  latencyMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
   modelId: string | null;
   costUsd: number | null;
   dryRun: boolean;
@@ -29,9 +29,9 @@ export type RecordedDecision = {
   policy_reason: string;
   contains_ssn: boolean;
   redacted_spans: number;
-  input_tokens: number;
-  output_tokens: number;
-  latency_ms: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  latency_ms: number | null;
 };
 
 export function fromChatStep(step: ChatStep): TraceStep {
@@ -160,6 +160,18 @@ export function verdictSentence(summary: TurnSummary): string {
     parts.push(`${summary.redactedSpans} SSN ${summary.redactedSpans === 1 ? "span was" : "spans were"} removed before the data went to Token Factory.`);
   }
   return parts.length > 0 ? parts.join(" ") : "Answered under the consent on file.";
+}
+
+// A measured value the source did not record reads as unknown, never as zero.
+export const UNKNOWN_VALUE = "unknown";
+
+export function latencyText(step: TraceStep): string {
+  return step.latencyMs === null ? UNKNOWN_VALUE : `${step.latencyMs} ms`;
+}
+
+export function tokensText(step: TraceStep): string {
+  if (step.inputTokens === null && step.outputTokens === null) return UNKNOWN_VALUE;
+  return `${step.inputTokens ?? UNKNOWN_VALUE} in / ${step.outputTokens ?? UNKNOWN_VALUE} out`;
 }
 
 export function stepTitle(step: TraceStep): string {

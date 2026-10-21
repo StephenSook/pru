@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -54,25 +57,43 @@ impl Drop for Harness {
     }
 }
 
-async fn token_factory_stub() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
+// The tool the stubbed Token Factory asks Hermes to call first: its MCP name and JSON arguments.
+#[derive(Clone)]
+struct TokenFactoryStub {
+    calls: Arc<Mutex<Vec<Value>>>,
+    first_tool: Arc<(String, String)>,
+}
+
+async fn token_factory_stub(
+    first_tool: &str,
+    first_arguments: &str,
+) -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let stub = TokenFactoryStub {
+        calls: Arc::clone(&calls),
+        first_tool: Arc::new((
+            format!("mcp__pru__{first_tool}"),
+            first_arguments.to_owned(),
+        )),
+    };
     let app = Router::new()
         .route(
             "/v1/chat/completions",
             post(
-                |State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
-                    let mut calls = calls.lock().expect("token factory calls lock");
+                |State(stub): State<TokenFactoryStub>, Json(body): Json<Value>| async move {
+                    let mut calls = stub.calls.lock().expect("token factory calls lock");
                     calls.push(body);
+                    let (tool_name, tool_arguments) = stub.first_tool.as_ref();
                     let message = if calls.len() == 1 {
                         json!({
                             "role": "assistant",
                             "content": null,
                             "tool_calls": [{
-                                "id": "call-summary",
+                                "id": "call-first-tool",
                                 "type": "function",
                                 "function": {
-                                    "name": "mcp__pru__get_client_summary",
-                                    "arguments": "{}"
+                                    "name": tool_name,
+                                    "arguments": tool_arguments
                                 }
                             }]
                         })
@@ -94,7 +115,7 @@ async fn token_factory_stub() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>
                 },
             ),
         )
-        .with_state(Arc::clone(&calls));
+        .with_state(stub);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind token factory stub");
@@ -105,6 +126,45 @@ async fn token_factory_stub() -> (String, Arc<Mutex<Vec<Value>>>, JoinHandle<()>
             .expect("serve token factory stub");
     });
     (format!("http://{address}/v1"), calls, task)
+}
+
+// How long the stubbed llama-server takes to answer, so a latency the gateway failed to measure
+// cannot pass as a real one.
+const LOCAL_MODEL_DELAY_MS: u64 = 60;
+
+// A stand-in for llama-server's OpenAI-compatible endpoint. `usage` is what llama-server puts in
+// a non-streaming response; None leaves it out.
+async fn local_model_stub(usage: Option<Value>) -> (String, JoinHandle<()>) {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(_body): Json<Value>| {
+            let usage = usage.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(LOCAL_MODEL_DELAY_MS)).await;
+                let mut response = json!({
+                    "id": "local-stub",
+                    "choices": [{"message": {
+                        "role": "assistant",
+                        "content": "The TEST DATA SSN matches the W-2."
+                    }}]
+                });
+                if let Some(usage) = usage {
+                    response["usage"] = usage;
+                }
+                Json(response)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local model stub");
+    let address = listener.local_addr().expect("local model address");
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve local model stub");
+    });
+    (format!("http://{address}/v1"), task)
 }
 
 async fn fake_hermes_chat(
@@ -265,7 +325,17 @@ async fn delete_fake_session(
 }
 
 async fn harness() -> Harness {
-    let (token_factory_url, token_factory_calls, token_task) = token_factory_stub().await;
+    harness_with(
+        "get_client_summary",
+        "{}",
+        "http://127.0.0.1:1/v1".to_owned(),
+    )
+    .await
+}
+
+async fn harness_with(first_tool: &str, first_arguments: &str, local_base_url: String) -> Harness {
+    let (token_factory_url, token_factory_calls, token_task) =
+        token_factory_stub(first_tool, first_arguments).await;
     let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind gateway");
@@ -281,7 +351,7 @@ async fn harness() -> Harness {
         authority.verifier(),
         RevocationList::default(),
         GatewayConfig {
-            local_base_url: "http://127.0.0.1:1/v1".to_owned(),
+            local_base_url,
             local_health_url: "http://127.0.0.1:1/health".to_owned(),
             local_model: "nemotron-3-nano-4b".to_owned(),
             local_api_key: None,
@@ -366,6 +436,91 @@ async fn chat(harness: &Harness, message: &str) -> (StatusCode, Value) {
     let status = response.status();
     let body = response.json().await.expect("chat response JSON");
     (status, body)
+}
+
+async fn ledger(harness: &Harness) -> Vec<Value> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/v1/clients/{CLIENT}/ledger", harness.url))
+        .header(WORKSPACE_HEADER, WORKSPACE)
+        .send()
+        .await
+        .expect("ledger request");
+    assert_eq!(response.status(), StatusCode::OK);
+    response.json().await.expect("ledger JSON")
+}
+
+// A Hermes turn whose first tool is ask_local_model, answered by a stubbed llama-server.
+async fn local_model_turn(usage: Option<Value>) -> (Harness, Value) {
+    let (local_url, local_task) = local_model_stub(usage).await;
+    let mut harness = harness_with(
+        "ask_local_model",
+        r#"{"question":"Check this client's SSN against the W-2"}"#,
+        local_url,
+    )
+    .await;
+    harness.tasks.push(local_task);
+    mint_use(&harness).await;
+    let (status, body) = chat(
+        &harness,
+        "Check this client's SSN against the W-2 with the local model.",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let local = body["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .find(|step| step["route"] == "local")
+        .cloned()
+        .unwrap_or_else(|| panic!("no local model step in {body}"));
+    (harness, local)
+}
+
+#[tokio::test]
+async fn local_model_step_carries_measured_latency_and_llama_server_token_counts() {
+    let (harness, local) = local_model_turn(Some(json!({
+        "prompt_tokens": 179,
+        "completion_tokens": 26,
+        "total_tokens": 205
+    })))
+    .await;
+
+    assert_eq!(local["tool_name"], "ask_local_model");
+    assert_eq!(local["decision"], "permit");
+    assert_eq!(local["model_id"], "nemotron-3-nano-4b");
+    let latency = local["latency_ms"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("local latency was not recorded: {local}"));
+    assert!(latency >= LOCAL_MODEL_DELAY_MS, "{local}");
+    assert_eq!(local["input_tokens"], 179);
+    assert_eq!(local["output_tokens"], 26);
+    assert_eq!(local["cost_usd"], 0.0);
+
+    let ledger = ledger(&harness).await;
+    let completion = ledger
+        .iter()
+        .find(|row| row["event"] == "completion" && row["route"] == "local")
+        .unwrap_or_else(|| panic!("no local completion row in {ledger:?}"));
+    assert_eq!(completion["authorization_id"], local["ledger_entry_id"]);
+    assert_eq!(completion["decision"], "permit");
+    assert_eq!(completion["policy_reason"], "upstream_complete");
+    assert_eq!(completion["model_id"], "nemotron-3-nano-4b");
+    assert_eq!(completion["input_tokens"], 179);
+    assert_eq!(completion["output_tokens"], 26);
+    assert_eq!(completion["latency_ms"], local["latency_ms"]);
+}
+
+#[tokio::test]
+async fn local_model_step_without_usage_reports_unknown_tokens_not_zero() {
+    let (_harness, local) = local_model_turn(None).await;
+
+    assert!(local["input_tokens"].is_null(), "{local}");
+    assert!(local["output_tokens"].is_null(), "{local}");
+    assert!(
+        local["latency_ms"].as_u64().unwrap_or_default() >= LOCAL_MODEL_DELAY_MS,
+        "{local}"
+    );
+    assert_eq!(local["cost_usd"], 0.0);
 }
 
 #[tokio::test]

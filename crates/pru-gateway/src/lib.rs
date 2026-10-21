@@ -285,7 +285,7 @@ struct LedgerDecision<'a> {
 struct LedgerCompletion<'a> {
     action: GatewayAction,
     route: &'a str,
-    model_id: &'a str,
+    model_id: Option<&'a str>,
     authorization_id: Uuid,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -429,7 +429,7 @@ impl EgressLedger {
             decision: "permit".to_owned(),
             route: completion.route.to_owned(),
             policy_reason: "upstream_complete".to_owned(),
-            model_id: Some(completion.model_id.to_owned()),
+            model_id: completion.model_id.map(str::to_owned),
             contains_ssn: false,
             span_hashes: Vec::new(),
             turn_id: request
@@ -895,6 +895,9 @@ async fn execute_gateway_action(
         ),
         GatewayAction::AgentTool => (false, Some(request.arguments)),
         GatewayAction::LlmComplete | GatewayAction::ChatComplete | GatewayAction::AgentModel => {
+            // Time the upstream call alone: a local call can first wait up to
+            // LOCAL_QUEUE_WAIT_SECS for the model slot, and that wait is not the model's latency.
+            let call_started = Instant::now();
             let call = call_llm(
                 state,
                 route,
@@ -902,7 +905,11 @@ async fn execute_gateway_action(
                 admission.expect("model actions acquire admission"),
             )
             .await?;
-            if matches!(action, GatewayAction::AgentModel) {
+            let call_latency_ms = call_started.elapsed().as_millis();
+            // An agent turn's trace reads each model step's tokens and time from its completion
+            // row, so every model call made inside a turn gets one: the agent's own Token Factory
+            // calls and the local model behind ask_local_model alike.
+            if matches!(action, GatewayAction::AgentModel) || request.ledger_context.is_some() {
                 append_completion(
                     state,
                     state.inner.clock.now(),
@@ -910,11 +917,11 @@ async fn execute_gateway_action(
                     LedgerCompletion {
                         action,
                         route,
-                        model_id: state.token_factory_model(),
+                        model_id: model_for(state, action, route),
                         authorization_id: ledger_entry_id,
                         input_tokens: call.input_tokens,
                         output_tokens: call.output_tokens,
-                        latency_ms: started.elapsed().as_millis(),
+                        latency_ms: call_latency_ms,
                     },
                 )?;
             }

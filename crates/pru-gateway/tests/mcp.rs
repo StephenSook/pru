@@ -491,11 +491,25 @@ async fn local_model_answer_is_redacted_before_returning_to_hermes() {
     assert!(encoded.contains("[SSN kept local]"));
     assert_eq!(harness.local_calls.lock().expect("local calls").len(), 1);
     let ledger = harness.ledger();
-    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger.len(), 3);
     assert_eq!(ledger[0]["route"], "local");
     assert_eq!(ledger[0]["contains_ssn"], true);
-    assert_eq!(ledger[1]["route"], "dynamic");
-    assert_eq!(ledger[1]["redacted_spans"], 1);
+    // The local call's completion row carries llama-server's token counts for the turn trace.
+    assert_eq!(ledger[1]["event"], "completion");
+    assert_eq!(ledger[1]["route"], "local");
+    assert_eq!(ledger[1]["authorization_id"], ledger[0]["id"]);
+    assert_eq!(ledger[1]["model_id"], "nemotron-3-nano-4b");
+    assert_eq!(ledger[1]["input_tokens"], 30);
+    assert_eq!(ledger[1]["output_tokens"], 10);
+    assert!(ledger[1]["latency_ms"].is_u64());
+    assert!(
+        ledger[1]["span_hashes"]
+            .as_array()
+            .expect("hashes")
+            .is_empty()
+    );
+    assert_eq!(ledger[2]["route"], "dynamic");
+    assert_eq!(ledger[2]["redacted_spans"], 1);
 }
 
 #[tokio::test]

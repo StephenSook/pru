@@ -68,15 +68,16 @@ pub struct AgentIdentity {
     pub version: String,
 }
 
+// The four measured fields are null where the gateway recorded no value, never a stand-in zero.
 #[derive(Debug, Serialize)]
 pub struct ChatStep {
     pub kind: String,
     pub route: String,
     pub model_id: Option<String>,
-    pub latency_ms: u128,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cost_usd: f64,
+    pub latency_ms: Option<u128>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
     pub decision: String,
     pub policy_reason: String,
     pub ledger_entry_id: Uuid,
@@ -208,15 +209,15 @@ pub async fn run_chat(
             kind: "model".to_owned(),
             route: action.route.clone(),
             model_id: model_id.clone(),
-            latency_ms: action.latency_ms,
-            input_tokens,
-            output_tokens,
-            cost_usd: model_cost(
+            latency_ms: Some(action.latency_ms),
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            cost_usd: Some(model_cost(
                 &action.route,
                 model_id.as_deref(),
                 input_tokens,
                 output_tokens,
-            ),
+            )),
             decision: action.decision.clone(),
             policy_reason: action.policy_reason.clone(),
             ledger_entry_id: action.ledger_entry_id,
@@ -500,27 +501,25 @@ fn hermes_steps(
             let id = entry["id"].as_str().ok_or(ApiError::ModelProtocol)?;
             let completion = completions.get(id).copied();
             let route = entry["route"].as_str().unwrap_or("unknown");
-            let input_tokens = completion
-                .and_then(|row| row["input_tokens"].as_u64())
-                .unwrap_or_default();
-            let output_tokens = completion
-                .and_then(|row| row["output_tokens"].as_u64())
-                .unwrap_or_default();
+            let model_id = entry["model_id"].as_str();
+            // A permitted row naming a model is a model call, and its tokens and time are on its
+            // completion row. Any other row sent nothing to a model, so its token count is zero.
+            let model_call = entry["decision"].as_str() == Some("permit") && model_id.is_some();
+            let (input_tokens, output_tokens) = match completion {
+                Some(row) => (row["input_tokens"].as_u64(), row["output_tokens"].as_u64()),
+                None if model_call => (None, None),
+                None => (Some(0), Some(0)),
+            };
             Ok(ChatStep {
                 kind: entry["step"].as_str().unwrap_or("unknown").to_owned(),
                 route: route.to_owned(),
-                model_id: entry["model_id"].as_str().map(str::to_owned),
+                model_id: model_id.map(str::to_owned),
                 latency_ms: completion
                     .and_then(|row| row["latency_ms"].as_u64())
-                    .map_or(0, u128::from),
+                    .map(u128::from),
                 input_tokens,
                 output_tokens,
-                cost_usd: model_cost(
-                    route,
-                    entry["model_id"].as_str(),
-                    input_tokens,
-                    output_tokens,
-                ),
+                cost_usd: step_cost(route, model_id, input_tokens, output_tokens),
                 decision: entry["decision"].as_str().unwrap_or("unknown").to_owned(),
                 policy_reason: entry["policy_reason"]
                     .as_str()
@@ -640,10 +639,10 @@ async fn execute_tool(
             kind: "tool".to_owned(),
             route: action.route,
             model_id: None,
-            latency_ms: action.latency_ms,
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
+            latency_ms: Some(action.latency_ms),
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cost_usd: Some(0.0),
             decision: action.decision,
             policy_reason: action.policy_reason,
             ledger_entry_id: action.ledger_entry_id,
@@ -680,10 +679,11 @@ fn denied_step(
         kind: kind.to_owned(),
         route: entry["route"].as_str().unwrap_or("unknown").to_owned(),
         model_id: entry["model_id"].as_str().map(str::to_owned),
-        latency_ms: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cost_usd: 0.0,
+        // The ledger row holds no timing, and a refused step sent nothing to a model.
+        latency_ms: None,
+        input_tokens: Some(0),
+        output_tokens: Some(0),
+        cost_usd: Some(0.0),
         decision: "deny".to_owned(),
         policy_reason,
         ledger_entry_id: serde_json::from_value(entry["id"].clone())
@@ -703,6 +703,21 @@ fn model_cost(route: &str, model: Option<&str>, input_tokens: u64, output_tokens
             .unwrap_or_default()
             .prices();
         (input_tokens as f64 * input_price + output_tokens as f64 * output_price) / 1_000_000.0
+    }
+}
+
+// A local call costs nothing whatever its token counts; a hosted call's cost is unknown when
+// either count is.
+fn step_cost(
+    route: &str,
+    model: Option<&str>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+) -> Option<f64> {
+    match (input_tokens, output_tokens) {
+        (Some(input), Some(output)) => Some(model_cost(route, model, input, output)),
+        _ if route == "local" => Some(0.0),
+        _ => None,
     }
 }
 
@@ -781,6 +796,30 @@ mod tests {
             ) - 0.30)
                 .abs()
                 < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn step_cost_is_zero_on_the_local_route_and_unknown_without_hosted_counts() {
+        assert_eq!(step_cost("local", None, None, None), Some(0.0));
+        assert_eq!(step_cost("local", None, Some(179), Some(26)), Some(0.0));
+        assert_eq!(
+            step_cost(
+                "token_factory",
+                Some(crate::TOKEN_FACTORY_MODEL),
+                None,
+                Some(26)
+            ),
+            None
+        );
+        assert!(
+            step_cost(
+                "token_factory",
+                Some(crate::TOKEN_FACTORY_MODEL),
+                Some(1_000_000),
+                Some(0)
+            )
+            .is_some_and(|cost| (cost - 0.06).abs() < f64::EPSILON)
         );
     }
 

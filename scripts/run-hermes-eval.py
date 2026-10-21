@@ -304,6 +304,17 @@ def prepare_workspace(
             )
 
 
+def recorded(step: dict[str, object], field: str) -> int | None:
+    """A measured step field, or None where the gateway sent null because it recorded none."""
+    value = step.get(field)
+    return None if value is None else int(value)
+
+
+def recorded_sum(steps: list[dict[str, object]], field: str) -> int:
+    """The sum of the values the gateway recorded; an unrecorded value adds nothing."""
+    return sum(value for step in steps if (value := recorded(step, field)) is not None)
+
+
 def turn_record(
     prompt: dict[str, object],
     run: int,
@@ -331,19 +342,19 @@ def turn_record(
                 "policy_reason": step["policy_reason"],
                 "contains_ssn": bool(row.get("contains_ssn", False)),
                 "redacted_spans": int(step.get("redacted_spans", 0)),
-                "input_tokens": int(step.get("input_tokens", 0)),
-                "output_tokens": int(step.get("output_tokens", 0)),
-                "latency_ms": int(step.get("latency_ms", 0)),
+                "input_tokens": recorded(step, "input_tokens"),
+                "output_tokens": recorded(step, "output_tokens"),
+                "latency_ms": recorded(step, "latency_ms"),
             }
         )
     tools_called = [step["tool_name"] for step in steps if step.get("tool_name")]
     observed = tools_called[0] if tools_called else None
     expected = prompt["expected_first_tool"]
     hosted_steps = [step for step in steps if step.get("route") == "token_factory"]
-    input_tokens = sum(int(step.get("input_tokens", 0)) for step in steps)
-    output_tokens = sum(int(step.get("output_tokens", 0)) for step in steps)
-    hosted_input = sum(int(step.get("input_tokens", 0)) for step in hosted_steps)
-    hosted_output = sum(int(step.get("output_tokens", 0)) for step in hosted_steps)
+    input_tokens = recorded_sum(steps, "input_tokens")
+    output_tokens = recorded_sum(steps, "output_tokens")
+    hosted_input = recorded_sum(hosted_steps, "input_tokens")
+    hosted_output = recorded_sum(hosted_steps, "output_tokens")
     estimated_cost = (
         hosted_input * input_price + hosted_output * output_price
     ) / 1_000_000.0
@@ -373,16 +384,12 @@ def turn_record(
         },
         "latency_ms": {
             "wall": wall_latency_ms,
-            "gateway_steps": sum(int(step.get("latency_ms", 0)) for step in steps),
-            "model": sum(
-                int(step.get("latency_ms", 0))
-                for step in steps
-                if step.get("kind") == "model"
+            "gateway_steps": recorded_sum(steps, "latency_ms"),
+            "model": recorded_sum(
+                [step for step in steps if step.get("kind") == "model"], "latency_ms"
             ),
-            "tools": sum(
-                int(step.get("latency_ms", 0))
-                for step in steps
-                if step.get("kind") == "tool"
+            "tools": recorded_sum(
+                [step for step in steps if step.get("kind") == "tool"], "latency_ms"
             ),
         },
         "ssn_reached_token_factory": ssn_violation,

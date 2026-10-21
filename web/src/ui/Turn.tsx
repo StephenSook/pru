@@ -4,9 +4,11 @@ import { RECORDED, probeSummary, recordedDate, recordedSteps } from "@/lib/recor
 import {
   decisionLabel,
   fromChatStep,
+  latencyText,
   reasonText,
   stepTitle,
   summarizeTurn,
+  tokensText,
   verdictSentence,
   type TraceStep,
   type TurnSummary,
@@ -45,8 +47,8 @@ export function TraceList({ steps, label }: Readonly<{ steps: readonly TraceStep
           ) : null}
           <dl>
             {step.modelId !== null ? <div><dt>Model</dt><dd>{step.modelId}</dd></div> : null}
-            <div><dt>Latency</dt><dd>{step.latencyMs} ms</dd></div>
-            <div><dt>Tokens</dt><dd>{step.inputTokens} in / {step.outputTokens} out</dd></div>
+            <div><dt>Latency</dt><dd>{latencyText(step)}</dd></div>
+            <div><dt>Tokens</dt><dd>{tokensText(step)}</dd></div>
             {step.costUsd !== null ? <div><dt>Cost</dt><dd>${step.costUsd.toFixed(8)}</dd></div> : null}
           </dl>
         </li>

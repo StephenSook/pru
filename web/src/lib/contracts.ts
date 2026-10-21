@@ -28,14 +28,15 @@ export type LedgerEntry = {
   span_hashes: string[];
 };
 
+// The gateway sends null for a measured field it did not record, never a stand-in zero.
 export type ChatStep = {
   kind: string;
   route: string;
   model_id: string | null;
-  latency_ms: number;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
+  latency_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
   decision: string;
   policy_reason: string;
   ledger_entry_id: string;
