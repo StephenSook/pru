@@ -8,6 +8,9 @@ name: judge-door
 on:
   schedule:
     - cron: "17 */2 * * *"
+    # Extra runs right after the window closes, so the paid endpoint stops soon after judging
+    # ends instead of waiting for the next (often hours-late) two-hourly run.
+    - cron: "41 21-23 15 12 *"
   workflow_dispatch:
     inputs:
       action:
