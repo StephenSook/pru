@@ -34,10 +34,11 @@ jobs:
       # Optional ISO time. Before it, a run outside the window leaves the endpoint as it is, so a
       # manual start (for example to record a demo) is not stopped by the next scheduled run.
       KEEP_UNTIL_UTC: ${{ vars.PRU_DOOR_KEEP_RUNNING_UNTIL }}
-      # Starts 24 hours early because scheduled runs can be hours late; ends after December 15
-      # has ended everywhere (UTC-12).
-      WINDOW_START_UTC: "2026-11-30T00:00:00Z"
-      WINDOW_END_UTC: "2026-12-16T12:00:00Z"
+      # Judging runs 2026-12-01 17:00Z to 2026-12-15 20:00Z. The window opens 17 hours early,
+      # because scheduled runs have arrived about 7 hours apart and a start takes about 9 minutes,
+      # and closes an hour after judging ends, to keep paid endpoint hours to the judging days.
+      WINDOW_START_UTC: "2026-12-01T00:00:00Z"
+      WINDOW_END_UTC: "2026-12-15T21:00:00Z"
       ACTION: ${{ inputs.action || 'ensure' }}
     steps:
       - name: Check configuration
